@@ -1,6 +1,7 @@
 import json
 import re
 from datetime import date, datetime
+from io import StringIO
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, TextIO, Union
 
@@ -14,7 +15,8 @@ from pydantic import (
     root_validator,
     validator,
 )
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, round_trip_dump, round_trip_load
+from ruamel.yaml.comments import CommentedMap
 
 from dolphin import __version__ as _dolphin_version
 from dolphin._log import get_log
@@ -56,10 +58,22 @@ def _move_file_in_dir(path: PathOrStr, values: dict) -> Path:
 class PsOptions(BaseModel):
     """Options for the PS pixel selection portion of the workflow."""
 
-    directory: Path = Path("PS")
-    output_file: Path = Path("ps_pixels.tif")
-    amp_dispersion_file: Path = Path("amp_dispersion.tif")
-    amp_mean_file: Path = Path("amp_mean.tif")
+    directory: Path = Field(
+        Path("PS"),
+        description="Sub-directory name to store PS pixel selection results.",
+    )
+    output_file: Path = Field(
+        Path("ps_pixels.tif"),
+        description="Output file name for PS pixel selection results.",
+    )
+    amp_dispersion_file: Path = Field(
+        Path("amp_dispersion.tif"),
+        description="Output file name for amplitude dispersion results.",
+    )
+    amp_mean_file: Path = Field(
+        Path("amp_mean.tif"),
+        description="Output file name for mean amplitude results.",
+    )
 
     amp_dispersion_threshold: float = Field(
         0.42,
@@ -99,7 +113,10 @@ class HalfWindow(BaseModel):
 class PhaseLinkingOptions(BaseModel):
     """Configurable options for wrapped phase estimation."""
 
-    directory: Path = Path("linked_phase")
+    directory: Path = Field(
+        Path("linked_phase"),
+        description="Sub-directory name to store wrapped phase estimation results.",
+    )
     ministack_size: int = Field(
         15, description="Size of the ministack for sequential estimator.", gt=1
     )
@@ -109,7 +126,10 @@ class PhaseLinkingOptions(BaseModel):
 class InterferogramNetwork(BaseModel):
     """Options to determine the type of network for interferogram formation."""
 
-    directory: Path = Path("interferograms")
+    directory: Path = Field(
+        Path("interferograms"),
+        description="Sub-directory name to store interferogram results.",
+    )
 
     reference_idx: Optional[int] = Field(
         None,
@@ -163,13 +183,28 @@ class InterferogramNetwork(BaseModel):
 class UnwrapOptions(BaseModel):
     """Options for unwrapping after wrapped phase estimation."""
 
-    run_unwrap: bool = False
-    directory: Path = Path("unwrap")
-    unwrap_method: UnwrapMethod = UnwrapMethod.SNAPHU
-    tiles: Sequence[int] = [1, 1]
-    init_method: str = "mcf"
-
-    # validators
+    run_unwrap: bool = Field(
+        False,
+        description=(
+            "Whether to run the unwrapping step after wrapped phase estimation."
+        ),
+    )
+    directory: Path = Field(
+        Path("unwrap"),
+        description="Sub-directory name to store unwrapping results.",
+    )
+    unwrap_method: UnwrapMethod = Field(
+        UnwrapMethod.SNAPHU,
+        description="Method to use for unwrapping.",
+    )
+    tiles: Sequence[int] = Field(
+        [1, 1],
+        description="Number of tiles to split the unwrapping into (for Tophu).",
+    )
+    init_method: str = Field(
+        "mcf",
+        description="Initialization method for SNAPHU.",
+    )
 
 
 class WorkerSettings(BaseSettings):
@@ -237,6 +272,7 @@ class Inputs(BaseModel):
 
     class Config:
         extra = Extra.forbid  # raise error if extra fields passed in
+        schema_extra = {"required": ["cslc_file_list"]}
 
     # validators
     @validator("cslc_file_list", pre=True)
@@ -316,9 +352,18 @@ class Inputs(BaseModel):
 class Outputs(BaseModel):
     """Options for the output format/compressions."""
 
-    output_format: OutputFormat = OutputFormat.NETCDF
-    scratch_directory: Path = Path("scratch")
-    output_directory: Path = Path("output")
+    output_format: OutputFormat = Field(
+        OutputFormat.NETCDF,
+        description="Output format for the workflow",
+    )
+    scratch_directory: Path = Field(
+        Path("scratch"),
+        description="Name of sub-directory to use for scratch files",
+    )
+    output_directory: Path = Field(
+        Path("output"),
+        description="Name of sub-directory to use for output files",
+    )
     output_resolution: Optional[Dict[str, int]] = Field(
         # {"x": 20, "y": 20},
         None,
@@ -398,7 +443,10 @@ class Workflow(BaseModel):
     Required fields are in `Inputs`, where you must specify `cslc_file_list`.
     """
 
-    workflow_name: str = WorkflowName.STACK
+    workflow_name: str = Field(
+        WorkflowName.STACK,
+        description="Name of the workflow to run",
+    )
 
     inputs: Inputs
     outputs: Outputs = Field(default_factory=Outputs)
@@ -413,8 +461,12 @@ class Workflow(BaseModel):
 
     # General workflow metadata
     worker_settings: WorkerSettings = Field(default_factory=WorkerSettings)
-    creation_time_utc: datetime = Field(default_factory=datetime.utcnow)
-    dolphin_version: str = _dolphin_version
+    creation_time_utc: datetime = Field(
+        default_factory=datetime.utcnow, description="Time the config file was created"
+    )
+    dolphin_version: str = Field(
+        _dolphin_version, description="Version of Dolphin used."
+    )
 
     # internal helpers
     # Stores the list of directories to be created by the workflow
@@ -465,7 +517,7 @@ class Workflow(BaseModel):
         return values
 
     # Extra model exporting options beyond .dict() or .json()
-    def to_yaml(self, output_path: Union[PathOrStr, TextIO]):
+    def to_yaml(self, output_path: Union[PathOrStr, TextIO], with_comments=False):
         """Save workflow configuration as a yaml file.
 
         Used to record the default-filled version of a supplied yaml.
@@ -474,14 +526,19 @@ class Workflow(BaseModel):
         ----------
         output_path : Pathlike
             Path to the yaml file to save.
+        with_comments : bool, default = False.
+            Whether to add comments containing the type/descriptions to all fields.
         """
-        data = json.loads(self.json())
-        y = YAML()
+        yaml_obj = self._to_yaml_obj()
+
+        if with_comments:
+            _add_comments(yaml_obj, self.schema())
+
         if hasattr(output_path, "write"):
-            y.dump(data, output_path)
+            round_trip_dump(yaml_obj, output_path)
         else:
             with open(output_path, "w") as f:
-                y.dump(data, f)
+                round_trip_dump(yaml_obj, f)
 
     @classmethod
     def from_yaml(cls, yaml_path: PathOrStr):
@@ -500,6 +557,7 @@ class Workflow(BaseModel):
         y = YAML(typ="safe")
         with open(yaml_path, "r") as f:
             data = y.load(f)
+
         return cls(**data)
 
     def __init__(self, **data):
@@ -522,3 +580,21 @@ class Workflow(BaseModel):
         for d in self._directory_list:
             log.debug(f"Creating directory: {d}")
             d.mkdir(parents=True, exist_ok=True)
+
+    def _to_yaml_obj(self) -> CommentedMap:
+        # Make the YAML object to add comments to
+        # We can't just do `dumps` for some reason, need a stream
+        ss = StringIO()
+        round_trip_dump(json.loads(self.json()), ss)
+        yaml_obj = round_trip_load(ss.getvalue())
+        return yaml_obj
+
+
+def _add_comments(
+    loaded_yaml: CommentedMap,
+    schema: dict,
+    indent: int = 0,
+    definitions: Optional[dict] = None,
+):
+    """Add comments above each YAML field using the pydantic model schema."""
+    return

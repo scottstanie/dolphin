@@ -1,5 +1,6 @@
 import json
 import re
+import sys
 import textwrap
 from datetime import date, datetime
 from io import StringIO
@@ -16,7 +17,7 @@ from pydantic import (
     root_validator,
     validator,
 )
-from ruamel.yaml import YAML, round_trip_dump, round_trip_load
+from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
 from dolphin import __version__ as _dolphin_version
@@ -535,11 +536,12 @@ class Workflow(BaseModel):
         if with_comments:
             _add_comments(yaml_obj, self.schema())
 
+        y = YAML()
         if hasattr(output_path, "write"):
-            round_trip_dump(yaml_obj, output_path)
+            y.dump(yaml_obj, output_path)
         else:
             with open(output_path, "w") as f:
-                round_trip_dump(yaml_obj, f)
+                y.dump(yaml_obj, f)
 
     @classmethod
     def from_yaml(cls, yaml_path: PathOrStr):
@@ -560,6 +562,23 @@ class Workflow(BaseModel):
             data = y.load(f)
 
         return cls(**data)
+
+    @classmethod
+    def print_yaml_schema(cls, output_path: Union[PathOrStr, TextIO] = sys.stdout):
+        """Print/save an empty configuration with defaults filled in.
+
+        Ignores the required `cslc_file_list` input, so a user can
+        inspect all fields.
+
+        Parameters
+        ----------
+        output_path : Pathlike
+            Path or stream to save to the yaml file to.
+            By default, prints to stdout.
+        """
+        # The .construct is a pydantic method to disable validation
+        # https://docs.pydantic.dev/usage/models/#creating-models-without-validation
+        cls(inputs=Inputs.construct()).to_yaml(output_path, with_comments=True)
 
     def __init__(self, **data):
         """After validation, set up properties for use during workflow run."""
@@ -585,9 +604,10 @@ class Workflow(BaseModel):
     def _to_yaml_obj(self) -> CommentedMap:
         # Make the YAML object to add comments to
         # We can't just do `dumps` for some reason, need a stream
+        y = YAML()
         ss = StringIO()
-        round_trip_dump(json.loads(self.json()), ss)
-        yaml_obj = round_trip_load(ss.getvalue())
+        y.dump(json.loads(self.json()), ss)
+        yaml_obj = y.load(ss.getvalue())
         return yaml_obj
 
 
@@ -598,8 +618,10 @@ def _add_comments(
     definitions: Optional[dict] = None,
 ):
     """Add comments above each YAML field using the pydantic model schema."""
+    # Definitions are in schemas that contain nested pydantic Models
     if definitions is None:
         definitions = schema.get("definitions")
+
     for key, val in schema["properties"].items():
         reference = ""
         # Get sub-schema if it exists

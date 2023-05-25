@@ -24,7 +24,7 @@ def run_gpu(
     neighbor_arrays: Optional[np.ndarray] = None,
     free_mem: bool = False,
     **kwargs,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run the GPU version of the stack covariance estimator and MLE solver.
 
     Parameters
@@ -60,6 +60,9 @@ def run_gpu(
         The estimated linked phase, with shape (n_slc, n_rows, n_cols)
     temp_coh : np.ndarray[np.float32]
         The temporal coherence at each pixel, shape (n_rows, n_cols)
+    lagrange : np.ndarray[np.float32]
+        The eigenvalue/lagrange parameter from the MLE inversion
+        at each pixel, shape (n_rows, n_cols)
     """
     import cupy as cp
 
@@ -101,13 +104,16 @@ def run_gpu(
         do_shp,
     )
 
-    d_output_phase = mle_stack(d_C_arrays, beta=beta, reference_idx=reference_idx)
+    d_output_phase, d_lagrange = mle_stack(
+        d_C_arrays, beta=beta, reference_idx=reference_idx
+    )
     d_cpx_phase = cp.exp(1j * d_output_phase)
 
     # Get the temporal coherence
     temp_coh = metrics.estimate_temp_coh(d_cpx_phase, d_C_arrays).get()
 
     mle_est = d_cpx_phase.get()
+    lagrange = d_lagrange.get()
     # # https://docs.cupy.dev/en/stable/user_guide/memory.html
     # may just be cached a lot of the huge memory available on aurora
     # But if we need to free GPU memory:
@@ -116,6 +122,7 @@ def run_gpu(
         del d_C_arrays
         del d_output_phase
         del d_cpx_phase
+        del d_lagrange
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
 
@@ -125,4 +132,4 @@ def run_gpu(
         # we need to match `io.compute_out_shape` here
         slcs_decimated = decimate(slc_stack, strides)
         mle_est *= np.abs(slcs_decimated)
-    return mle_est, temp_coh
+    return mle_est, temp_coh, lagrange

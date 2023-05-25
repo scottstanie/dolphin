@@ -32,7 +32,7 @@ def run_mle(
     use_slc_amp: bool = True,
     n_workers: int = 1,
     gpu_enabled: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Estimate the linked phase for a stack using the MLE estimator.
 
     Parameters
@@ -124,7 +124,7 @@ def run_mle(
 
     #######################################
     if not gpu_enabled or not gpu_is_available():
-        mle_est, temp_coh = _run_cpu(
+        mle_est, temp_coh, lagrange = _run_cpu(
             slc_stack=slc_stack_masked,
             half_window=half_window,
             strides=strides,
@@ -135,7 +135,7 @@ def run_mle(
             n_workers=n_workers,
         )
     else:
-        mle_est, temp_coh = _run_gpu(
+        mle_est, temp_coh, lagrange = _run_gpu(
             slc_stack=slc_stack_masked,
             half_window=half_window,
             strides=strides,
@@ -158,7 +158,7 @@ def run_mle(
             mle_est, temp_coh, slc_stack, ps_mask, strides, avg_mag, reference_idx
         )
 
-    return mle_est, temp_coh
+    return mle_est, temp_coh, lagrange
 
 
 def mle_stack(
@@ -214,7 +214,11 @@ def mle_stack(
         Gamma = (1 - beta) * Gamma + beta * Id
 
     Gamma_inv = xp.linalg.inv(Gamma)
-    V = _get_eigvecs(Gamma_inv * C_arrays, n_workers=n_workers)
+    lambd, V = _get_eigvecs(Gamma_inv * C_arrays, n_workers=n_workers)
+
+    # The shape of V is (rows, cols, nslc)
+    # The column V[:, i] is the normalized eigenvector for to the eigenvalue lambd[i]
+    lagrange = lambd[:, :, 0]
 
     # The shape of V is (rows, cols, nslc, nslc)
     # at pixel (r, c), the columns of V[r, c] are the eigenvectors.
@@ -229,7 +233,7 @@ def mle_stack(
     # Return the phase (still as a GPU array)
     phase_stack = xp.angle(evd_estimate)
     # Move the SLC dimension to the front (to match the SLC stack shape)
-    return xp.moveaxis(phase_stack, -1, 0)
+    return xp.moveaxis(phase_stack, -1, 0), lagrange
 
 
 def _get_eigvecs(C, n_workers: int = 1):
@@ -249,6 +253,7 @@ def _get_eigvecs(C, n_workers: int = 1):
     if num_blocks > 1:
         # V_out wil lbe the eigenvectors, shape (rows, cols, nslc, nslc)
         V_out = xp.empty_like(C)
+        lambd = xp.empty(C.shape[:-1], dtype=np.float32)
         # Split the computation into blocks
         # This is to avoid overflow errors in cupy.linalg.eigh
         for i in range(num_blocks):
@@ -257,27 +262,32 @@ def _get_eigvecs(C, n_workers: int = 1):
             end = (i + 1) * (rows // num_blocks)
             if i == num_blocks - 1:
                 end = rows
-            V_out[start:end] = xp.linalg.eigh(C[start:end])[1]
+            l, V = xp.linalg.eigh(C[start:end])
+            lambd[start:end] = l
+            V_out[start:end] = V
     else:
-        _, V_out = xp.linalg.eigh(C)
-    return V_out
+        lambd, V_out = xp.linalg.eigh(C)
+    return lambd, V_out
 
 
 def _get_eigvecs_scipy(C, n_workers=1):
     C_shared = pymp.shared.array(C.shape, dtype="complex64")
     C_shared[:] = C[:]
     rows, cols, nslc, _ = C.shape
-    out = pymp.shared.array((rows, cols, nslc), dtype="complex64")
+    out_V = pymp.shared.array((rows, cols, nslc), dtype="complex64")
+    out_lambd = pymp.shared.array((rows, cols), dtype="float32")
     with pymp.Parallel(n_workers) as p:
         # Looping over linear index for pixels (less nesting of pymp context managers)
         for idx in p.range(rows * cols):
             # Iterating over every output pixels, convert to a row/col index
             r, c = np.unravel_index(idx, (rows, cols))
-            out[r, c, :] = eigh(C_shared[r, c], subset_by_index=[0, 0])[1].ravel()
+            lambd, V = eigh(C_shared[r, c], subset_by_index=[0, 0])
+            out_V[r, c, :] = V.ravel()
+            out_lambd[r, c] = lambd
 
     del C_shared
     # Add the last dimension back to match the shape of the cupy output
-    return out[:, :, :, None]
+    return lambd, out_V[:, :, :, None]
 
 
 def _check_all_nans(slc_stack):

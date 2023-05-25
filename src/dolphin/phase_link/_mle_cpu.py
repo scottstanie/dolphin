@@ -56,6 +56,9 @@ def run_cpu(
         The estimated linked phase, with shape (n_slc, n_rows, n_cols)
     temp_coh : np.ndarray[np.float32]
         The temporal coherence at each pixel, shape (n_rows, n_cols)
+    lagrange : np.ndarray[np.float32]
+        The eigenvalue/lagrange parameter from the MLE inversion
+        at each pixel, shape (n_rows, n_cols)
     """
     C_arrays = covariance.estimate_stack_covariance_cpu(
         slc_stack,
@@ -65,7 +68,9 @@ def run_cpu(
         n_workers=n_workers,
     )
 
-    output_phase = mle_stack(C_arrays, beta, reference_idx, n_workers=n_workers)
+    output_phase, lagrange = mle_stack(
+        C_arrays, beta, reference_idx, n_workers=n_workers
+    )
     cpx_phase = np.exp(1j * output_phase)
     # Get the temporal coherence
     temp_coh = metrics.estimate_temp_coh(cpx_phase, C_arrays)
@@ -77,4 +82,4 @@ def run_cpu(
         slcs_decimated = decimate(slc_stack, strides)
         mle_est *= np.abs(slcs_decimated)
 
-    return mle_est, temp_coh
+    return mle_est, temp_coh, lagrange

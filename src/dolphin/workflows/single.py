@@ -156,6 +156,18 @@ def run_wrapped_phase_single(
         nodata=0,
     )
 
+    # Create the empty EMI \lambda file
+    lagrange_file = output_folder / f"lagrange_{start_end}.tif"
+    io.write_arr(
+        arr=None,
+        like_filename=vrt.outfile,
+        output_name=lagrange_file,
+        nbands=1,
+        dtype=np.float32,
+        strides=strides,
+        nodata=0,
+    )
+
     # Create the empty compressed temporal coherence file
     shp_counts_file = output_folder / f"shp_counts_{start_end}.tif"
     io.write_arr(
@@ -181,7 +193,7 @@ def run_wrapped_phase_single(
         max_bytes=stack_max_bytes,
         skip_empty=True,
         nodata_mask=nodata_mask,
-        show_progress=False,
+        # show_progress=False,
     )
     for cur_data, (rows, cols) in block_gen:
         if np.all(cur_data == 0):
@@ -205,7 +217,7 @@ def run_wrapped_phase_single(
         )
         # Run the phase linking process on the current ministack
         try:
-            cur_mle_stack, tcorr = run_mle(
+            cur_mle_stack, tcorr, lagrange = run_mle(
                 cur_data,
                 half_window=half_window,
                 strides=strides,
@@ -234,6 +246,7 @@ def run_wrapped_phase_single(
         # Fill in the nan values with 0
         np.nan_to_num(cur_mle_stack, copy=False)
         np.nan_to_num(tcorr, copy=False)
+        np.nan_to_num(lagrange, copy=False)
 
         # Save each of the MLE estimates (ignoring the compressed SLCs)
         assert len(cur_mle_stack[first_non_comp_idx:]) == len(output_slc_files)
@@ -243,8 +256,9 @@ def run_wrapped_phase_single(
         for img, f in zip(cur_mle_stack[first_non_comp_idx:], output_slc_files):
             writer.queue_write(img, f, out_row_start, out_col_start)
 
-        # Save the temporal coherence blocks
+        # Save the temporal coherence / eigenvalue blocks
         writer.queue_write(tcorr, tcorr_file, out_row_start, out_col_start)
+        writer.queue_write(lagrange, lagrange_file, out_row_start, out_col_start)
 
         # Save the SHP counts for each pixel (if not using Rect window)
         shp_counts = np.sum(neighbor_arrays[rows, cols], axis=(-2, -1))

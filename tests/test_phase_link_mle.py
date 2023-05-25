@@ -56,7 +56,9 @@ def test_estimation_gpu(slc_samples, est_mle_cpu):
     # Get the GPU version
     slc_stack = slc_samples.reshape(NUM_ACQ, 11, 11)
 
-    est_mle_gpu_fullres, temp_coh = run_gpu(slc_stack, half_window={"x": 5, "y": 5})
+    est_mle_gpu_fullres, temp_coh, lagrange = run_gpu(
+        slc_stack, half_window={"x": 5, "y": 5}
+    )
     assert est_mle_gpu_fullres.shape == (len(est_mle_cpu), 11, 11)
     assert temp_coh.shape == (11, 11)
     # The middle pixel should be the same, since it had the full window

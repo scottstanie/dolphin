@@ -23,6 +23,7 @@ def run_cpu(
     use_slc_amp: bool = True,
     neighbor_arrays: Optional[np.ndarray] = None,
     calc_average_coh: bool = False,
+    save_coh_matrices: bool = False,
     n_workers: int = 1,
     **kwargs,
 ) -> MleOutput:
@@ -54,6 +55,9 @@ def run_cpu(
     calc_average_coh : bool, default=False
         If requested, the average of each row of the covariance matrix is computed
         for the purposes of finding the best reference (highest coherence) date
+    save_coh_matrices : bool, default=False
+        If requested, returns the full set of coherences magnitude matrices,
+        truncated to uint8, for further analysis.
     n_workers : int, optional
         The number of workers to use for (CPU version) multiprocessing.
         If 1 (default), no multiprocessing is used.
@@ -88,9 +92,16 @@ def run_cpu(
     if calc_average_coh:
         # If requested, average the Cov matrix at each row for reference selection
         avg_coh_per_date = np.abs(C_arrays).mean(axis=3)
-        avg_coh = np.argmax(avg_coh_per_date, axis=2)
+        # avg_coh = np.argmax(avg_coh_per_date, axis=2)
     else:
-        avg_coh = None
+        # avg_coh = None
+        avg_coh_per_date = None
+
+    if save_coh_matrices:
+        # If requested, save all coherence magnitudes (truncated for space)
+        C_mags = (np.abs(C_arrays) * 100).astype("uint8")
+    else:
+        C_mags = None
 
     if use_slc_amp:
         # use the amplitude from the original SLCs
@@ -99,4 +110,5 @@ def run_cpu(
         slcs_decimated = decimate(slc_stack, strides)
         mle_est *= np.abs(slcs_decimated)
 
-    return MleOutput(mle_est, temp_coh, avg_coh)
+    # return MleOutput(mle_est, temp_coh, avg_coh, C_mags)
+    return MleOutput(mle_est, temp_coh, avg_coh_per_date, C_mags)

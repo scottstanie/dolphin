@@ -147,6 +147,7 @@ def run_wrapped_phase_single(
         OutputFile(output_folder / f"tcorr_{start_end}.tif", np.float32, strides),
         OutputFile(output_folder / f"avg_coh_{start_end}.tif", np.uint16, strides),
         OutputFile(output_folder / f"shp_counts_{start_end}.tif", np.uint16, strides),
+        OutputFile(output_folder / f"coh_mags_{start_end}.h5", np.uint8, strides),
     ]
     for op in output_files:
         io.write_arr(
@@ -207,7 +208,8 @@ def run_wrapped_phase_single(
         # # TESTING TODO
         reference_idx = max(0, first_non_comp_idx - 1)
         try:
-            cur_mle_stack, tcorr, avg_coh = run_mle(
+            # cur_mle_stack, tcorr, avg_coh = run_mle(
+            mle_out = run_mle(
                 cur_data,
                 half_window=half_window,
                 strides=strides,
@@ -235,15 +237,15 @@ def run_wrapped_phase_single(
             continue
 
         # Fill in the nan values with 0
-        np.nan_to_num(cur_mle_stack, copy=False)
-        np.nan_to_num(tcorr, copy=False)
+        np.nan_to_num(mle_out.cur_mle_stack, copy=False)
+        np.nan_to_num(mle_out.tcorr, copy=False)
 
         # Save each of the MLE estimates (ignoring those corresponding to
         # compressed SLCs indexes)
-        assert len(cur_mle_stack[first_non_comp_idx:]) == len(output_slc_files)
+        assert len(mle_out.cur_mle_stack[first_non_comp_idx:]) == len(output_slc_files)
 
         for img, f in zip(
-            cur_mle_stack[first_non_comp_idx:, trimmed_rows, trimmed_cols],
+            mle_out.cur_mle_stack[first_non_comp_idx:, trimmed_rows, trimmed_cols],
             output_slc_files,
         ):
             writer.queue_write(img, f, out_rows.start, out_cols.start)
@@ -261,7 +263,7 @@ def run_wrapped_phase_single(
         # Compress the ministack using only the non-compressed SLCs
         cur_comp_slc = compress(
             cur_data[first_non_comp_idx:, trim_full_row, trim_full_col],
-            cur_mle_stack[first_non_comp_idx:, trimmed_rows, trimmed_cols],
+            mle_out.cur_mle_stack[first_non_comp_idx:, trimmed_rows, trimmed_cols],
         )
 
         # ### Save results ###
@@ -275,7 +277,7 @@ def run_wrapped_phase_single(
         )
 
         # All other outputs are strided (smaller in size)
-        out_datas = [tcorr, avg_coh, shp_counts]
+        out_datas = [mle_out.tcorr, mle_out.avg_coh, shp_counts, mle_out.coh_mags]
         for data, output_file in zip(out_datas, output_files[1:]):
             if data is None:  # May choose to skip some outputs, e.g. "avg_coh"
                 continue

@@ -25,6 +25,7 @@ def run_gpu(
     neighbor_arrays: Optional[np.ndarray] = None,
     free_mem: bool = False,
     calc_average_coh: bool = False,
+    save_coh_matrices: bool = False,
     **kwargs,
 ) -> MleOutput:
     """Run the GPU version of the stack covariance estimator and MLE solver.
@@ -61,6 +62,9 @@ def run_gpu(
     calc_average_coh : bool, default=False
         If requested, the average of each row of the covariance matrix is computed
         for the purposes of finding the best reference (highest coherence) date
+    save_coh_matrices : bool, default=False
+        If requested, returns the full set of coherences magnitude matrices,
+        truncated to uint8, for further analysis.
 
     Returns
     -------
@@ -124,6 +128,13 @@ def run_gpu(
     else:
         avg_coh = None
 
+    if save_coh_matrices:
+        # If requested, save all coherence magnitudes (truncated for space)
+        C_mags = (cp.abs(d_C_arrays) * 100).astype("uint8")
+        C_mags = cp.argmax(d_avg_coh_per_date, axis=2).get()
+    else:
+        C_mags = None
+
     mle_est = d_cpx_phase.get()
     # # https://docs.cupy.dev/en/stable/user_guide/memory.html
     # may just be cached a lot of the huge memory available on aurora
@@ -143,4 +154,4 @@ def run_gpu(
         slcs_decimated = decimate(slc_stack, strides)
         mle_est *= np.abs(slcs_decimated)
 
-    return MleOutput(mle_est, temp_coh, avg_coh)
+    return MleOutput(mle_est, temp_coh, avg_coh, C_mags)

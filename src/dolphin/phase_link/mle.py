@@ -21,7 +21,9 @@ class PhaseLinkRuntimeError(Exception):
 
 
 MleOutput = namedtuple(
-    "MleOutput", ["mle_est", "temp_coh", "avg_coh"], defaults=[None, None, None]
+    "MleOutput",
+    ["mle_est", "temp_coh", "avg_coh", "coh_matrices"],
+    defaults=[None, None, None, None],
 )
 
 
@@ -37,6 +39,8 @@ def run_mle(
     neighbor_arrays: Optional[np.ndarray] = None,
     avg_mag: Optional[np.ndarray] = None,
     use_slc_amp: bool = True,
+    calc_average_coh: bool = False,
+    save_coh_matrices: bool = False,
     n_workers: int = 1,
     gpu_enabled: bool = False,
     # ) -> tuple[np.ndarray, np.ndarray]:
@@ -81,6 +85,12 @@ def run_mle(
     use_slc_amp : bool, optional
         Whether to use the SLC amplitude when outputting the MLE estimate,
         or to set the SLC amplitude to 1.0. By default True.
+    calc_average_coh : bool, default=False
+        If requested, the average of each row of the covariance matrix is computed
+        for the purposes of finding the best reference (highest coherence) date
+    save_coh_matrices : bool, default=False
+        If requested, returns the full set of coherences magnitude matrices,
+        truncated to uint8, for further analysis.
     n_workers : int, optional
         The number of workers to use for (CPU version) multiprocessing.
         If 1 (default), no multiprocessing is used.
@@ -145,6 +155,8 @@ def run_mle(
             reference_idx=reference_idx,
             neighbor_arrays=neighbor_arrays,
             use_slc_amp=use_slc_amp,
+            calc_average_coh=calc_average_coh,
+            save_coh_matrics=save_coh_matrices,
             n_workers=n_workers,
         )
     else:
@@ -158,6 +170,8 @@ def run_mle(
             reference_idx=reference_idx,
             neighbor_arrays=neighbor_arrays,
             use_slc_amp=use_slc_amp,
+            calc_average_coh=calc_average_coh,
+            save_coh_matrics=save_coh_matrices,
             # is it worth passing the blocks-per-grid?
         )
 
@@ -202,8 +216,8 @@ def mle_stack(
         The sample covariance matrix at each pixel
         (e.g. from [dolphin.phase_link.covariance.estimate_stack_covariance_cpu][])
     use_evd : bool, default = False
-        Use eigenvalue decomposition on the covariance matrix instead of
-        the EMI algorithm.
+        Use eigenvalue decomposition on the covariance matrix [2] instead of
+        the EMI algorithm [1].
     beta : float, optional
         The regularization parameter for inverting Gamma = |C|
         The regularization is applied as (1 - beta) * Gamma + beta * I
@@ -227,6 +241,10 @@ def mle_stack(
         [1] Ansari, H., De Zan, F., & Bamler, R. (2018). Efficient phase
         estimation for interferogram stacks. IEEE Transactions on
         Geoscience and Remote Sensing, 56(7), 4109-4125.
+        [2] Fornaro, G., Verde, S., Reale, D., & Pauciullo, A. (2014).
+        CAESAR: An approach based on covariance matrix decomposition to improve
+        multibaseline-multitemporal interferometric SAR processing.
+        IEEE Transactions on Geoscience and Remote Sensing, 53(4), 2050-2065
 
     """
     xp = get_array_module(C_arrays)
@@ -235,7 +253,7 @@ def mle_stack(
     Gamma = xp.abs(C_arrays)
 
     if use_evd:
-        V = _get_eigvecs(C_arrays, n_workers=n_workers, use_evd=True)
+        eigvals, V = _get_eigvecs(C_arrays, n_workers=n_workers, use_evd=True)
         column_idx = -1
     else:
         if beta > 0:
@@ -245,8 +263,16 @@ def mle_stack(
             Id = xp.tile(Id, (Gamma.shape[0], Gamma.shape[1], 1, 1))
             Gamma = (1 - beta) * Gamma + beta * Id
 
+        eigvals, V = _get_eigvecs(Gamma, n_workers=n_workers, use_evd=False)
+        print("saved")
+        import ipdb
+
+        ipdb.set_trace()
+        np.save("eigvals.npy", eigvals)
         Gamma_inv = xp.linalg.inv(Gamma)
-        V = _get_eigvecs(Gamma_inv * C_arrays, n_workers=n_workers, use_evd=False)
+        eigvals, V = _get_eigvecs(
+            Gamma_inv * C_arrays, n_workers=n_workers, use_evd=False
+        )
         column_idx = 0
 
     # The shape of V is (rows, cols, nslc, nslc)
@@ -267,23 +293,23 @@ def mle_stack(
     return xp.moveaxis(phase_stack, -1, 0)
 
 
-def _get_eigvecs(C, n_workers: int = 1, use_evd: bool = False):
-    xp = get_array_module(C)
+def _get_eigvecs(A, n_workers: int = 1, use_evd: bool = False):
+    xp = get_array_module(A)
     if xp == np:
         # The block splitting isn't needed for numpy.
-        # return np.linalg.eigh(C)[1]
-        return _get_eigvecs_scipy(C, n_workers=n_workers, use_evd=use_evd)
+        # return np.linalg.eigh(A)[1]
+        return _get_eigvecs_scipy(A, n_workers=n_workers, use_evd=use_evd)
 
     # Make sure we don't overflow: cupy https://github.com/cupy/cupy/issues/7261
     # The work_size must be less than 2**30, so
     # Keep (rows*cols) approximately less than 2**21? make it 2**20 to be safer
     # see https://github.com/cupy/cupy/issues/7261#issuecomment-1362991323 for that math
-    rows, cols, _, _ = C.shape
+    rows, cols, _, _ = A.shape
     max_batch_size = 2**20
     num_blocks = 1 + (rows * cols) // max_batch_size
     if num_blocks > 1:
         # V_out wil lbe the eigenvectors, shape (rows, cols, nslc, nslc)
-        V_out = xp.empty_like(C)
+        V_out = xp.empty_like(A)
         # Split the computation into blocks
         # This is to avoid overflow errors in cupy.linalg.eigh
         for i in range(num_blocks):
@@ -292,10 +318,10 @@ def _get_eigvecs(C, n_workers: int = 1, use_evd: bool = False):
             end = (i + 1) * (rows // num_blocks)
             if i == num_blocks - 1:
                 end = rows
-            V_out[start:end] = xp.linalg.eigh(C[start:end])[1]
+            eigvals, V_out[start:end] = xp.linalg.eigh(A[start:end])
     else:
-        _, V_out = xp.linalg.eigh(C)
-    return V_out
+        eigvals, V_out = xp.linalg.eigh(A)
+    return eigvals, V_out
 
 
 def _get_eigvecs_scipy(A: np.ndarray, n_workers: int = 1, use_evd: bool = False):
@@ -305,19 +331,22 @@ def _get_eigvecs_scipy(A: np.ndarray, n_workers: int = 1, use_evd: bool = False)
     A_shared = pymp.shared.array(A.shape, dtype="complex64")
     A_shared[:] = A[:]
     rows, cols, nslc, _ = A.shape
-    out = pymp.shared.array((rows, cols, nslc), dtype="complex64")
+    out_eigvecs = pymp.shared.array((rows, cols, nslc), dtype="complex64")
+    out_eigvals = pymp.shared.array((rows, cols), dtype="complex64")
     with pymp.Parallel(n_workers) as p:
         # Looping over linear index for pixels (less nesting of pymp context managers)
         for idx in p.range(rows * cols):
             # Iterating over every output pixels, convert to a row/col index
             r, c = np.unravel_index(idx, (rows, cols))
-            out[r, c, :] = eigh(
+            eigvals, eigvecs = eigh(
                 A_shared[r, c], subset_by_index=[subset_idx, subset_idx]
-            )[1].ravel()
+            )
+            out_eigvecs[r, c, :] = eigvecs.ravel()
+            out_eigvals[r, c] = eigvals.item()
 
     del A_shared
     # Add the last dimension back to match the shape of the cupy output
-    return out[:, :, :, None]
+    return out_eigvals[:, :, None], out_eigvecs[:, :, :, None]
 
 
 def _check_all_nans(slc_stack: np.ndarray):

@@ -7,7 +7,7 @@ from typing import NamedTuple, Optional
 
 import jax.numpy as jnp
 import numpy as np
-from jax import Array, jit, vmap
+from jax import Array, jit, lax, vmap
 from jax.typing import ArrayLike
 
 from dolphin._types import HalfWindow, Strides
@@ -289,6 +289,102 @@ def _get_eigvecs_jax(C_arrays: ArrayLike, use_evd: bool = False) -> Array:
     # vmap over the first 2 dimensions (rows, cols)
     get_eigvecs_block = vmap(vmap(get_top_eigvecs))
     return get_eigvecs_block(C_arrays)
+
+
+def get_largest_eigenvector(mat: ArrayLike, num_iters: int = 15) -> Array:
+    """Use the power iteration method for find the largest eigenvector of `a`.
+
+    https://math.stackexchange.com/questions/271864/how-to-compute-the-smallest-eigenvalue-using-the-power-iteration-algorithm
+    """
+    # Use lax.fori_loop
+    # https://jax.readthedocs.io/en/latest/_autosummary/jax.lax.fori_loop.html#jax.lax.fori_loop
+    # def fori_loop(lower, upper, body_fun, init_val):
+    #     val = init_val
+    #     for i in range(lower, upper):
+    #         val = body_fun(i, val)
+    #     return val
+
+    # The body function is just another matrix multiply, followed by normalzing
+    def body_fun(i, val):
+        new_mat = mat @ val
+        # Now divide by norm
+        return new_mat / jnp.linalg.norm(new_mat)
+
+    # Start with some unit vector. Make it zero phase:
+    m, n = mat.shape
+    v0 = jnp.ones(m, dtype=mat.dtype) / jnp.sqrt(m)
+    v_final = lax.fori_loop(1, num_iters, body_fun, v0, unroll=True)
+    # Also find the eigenvalue of the matrix
+    # eigenvalue = jnp.linalg.norm(mat @ v_final)
+    return v_final[:, None]
+
+
+@partial(jit, static_argnames=("num_iters",))
+def get_largest_stack(C_arrays: ArrayLike, num_iters: int = 15) -> Array:
+    func_cols = vmap(lambda x: get_largest_eigenvector(x, num_iters))
+    func_stack = vmap(func_cols)
+    return func_stack(C_arrays)
+
+
+def get_largest_evec_plus_resid(mat, num_iters) -> tuple[Array, Array]:
+    """Get the largest eigvec, and also the residuals from each power iteration."""
+
+    # Use lax.scan to collect residuals
+    # https://jax.readthedocs.io/en/latest/_autosummary/jax.lax.scan.html#jax.lax.scan
+    # def scan(f, init, xs, length=None):
+    #     if xs is None:
+    #       xs = [None] * length
+    #     carry = init
+    #     ys = []
+    #     for x in xs:
+    #       carry, y = f(carry, x)
+    #       ys.append(y)
+    #     return carry, np.stack(ys)
+    def body_fun(carry, _unused):
+        # Unpack carry to vector and residual
+        old_vec = carry
+        # Do next matmul
+        new_vec = mat @ old_vec
+        # Now divide by norm
+        new_normed_vec = new_vec / jnp.linalg.norm(new_vec)
+        # Find the difference of last vector and this one
+        resid_new = jnp.linalg.norm(new_normed_vec - old_vec)
+        return new_normed_vec, resid_new
+
+    m, n = mat.shape
+    v0 = jnp.ones(m, dtype=mat.dtype) / jnp.sqrt(m)
+    # v_final, residuals = lax.scan(body_fun, v0, None, length=num_iters)
+    return lax.scan(body_fun, v0, None, length=num_iters)
+
+
+@partial(jit, static_argnames=("num_iters",))
+def get_largest_stack_plus_resid(C_arrays: ArrayLike, num_iters: int = 15) -> Array:
+    func_cols = vmap(lambda x: get_largest_evec_plus_resid(x, num_iters))
+    func_stack = vmap(func_cols)
+    return func_stack(C_arrays)
+
+
+def get_largest_while(mat, tol: float = 1e-5) -> tuple[Array, Array]:
+    """Use a jax while loop to find the largest eigenvector."""
+
+
+def rayleigh_quotient_step(matrix: ArrayLike, q: ArrayLike):
+    I = jnp.eye(matrix.shape[0], dtype=matrix.dtype)
+    rq = jnp.dot(jnp.conj(q).T, jnp.dot(matrix, q)) / jnp.dot(jnp.conj(q).T, q)
+    # w, _ = jnp.linalg.solve(matrix - rq * I, q, tol=1e-6)
+    w = jnp.linalg.solve(matrix - rq * I, q)
+    q_new = w / jnp.linalg.norm(w)
+    return q_new, q_new
+
+
+def rayleigh_quotient_iteration(matrix: ArrayLike, max_iter: int = 100):
+    n = matrix.shape[0]
+    # q0 = jax.random.normal(jax.random.PRNGKey(0), (n,))
+    q0 = jnp.ones((n,), dtype=matrix.dtype) / jnp.sqrt(n)
+    q0 /= jnp.linalg.norm(q0)
+    f = lambda q, _: rayleigh_quotient_step(matrix, q)
+    q_final, _ = lax.scan(f, q0, None, length=max_iter)
+    return q_final
 
 
 def _check_all_nans(slc_stack: np.ndarray):

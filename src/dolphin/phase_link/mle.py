@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import logging
 import warnings
-from functools import partial
 from typing import NamedTuple, Optional
 
 import jax.numpy as jnp
 import numpy as np
-from jax import Array, jit, lax, vmap
+from jax import Array
 from jax.typing import ArrayLike
 
 from dolphin._types import HalfWindow, Strides
-from dolphin.utils import get_array_module, take_looks
+from dolphin.utils import take_looks
+
+from ._eigen import get_eigvecs
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ DEFAULT_STRIDES = Strides(1, 1)
 
 
 def run_mle(
-    slc_stack: np.ndarray,
+    slc_stack: ArrayLike,
     half_window: HalfWindow,
     strides: Strides = DEFAULT_STRIDES,
     use_evd: bool = False,
@@ -53,7 +54,7 @@ def run_mle(
 
     Parameters
     ----------
-    slc_stack : np.ndarray
+    slc_stack : ArrayLike
         The SLC stack, with shape (n_images, n_rows, n_cols)
     half_window : HalfWindow, or tuple[int, int]
         A (named) tuple of (y, x) sizes for the half window.
@@ -206,24 +207,23 @@ def mle_stack(
     ndarray, shape = (nslc, rows, cols)
         The estimated linked phase, same shape as the input slcs (possibly multilooked)
     """
-    xp = get_array_module(C_arrays)
     # estimate the wrapped phase based on the EMI paper
     # *smallest* eigenvalue decomposition of the (|Gamma|^-1  *  C) matrix
-    Gamma = xp.abs(C_arrays)
+    Gamma = jnp.abs(C_arrays)
 
     if use_evd:
-        V = _get_eigvecs(C_arrays, use_evd=True)
+        V = get_eigvecs(C_arrays, use_evd=True)
         column_idx = -1
     else:
         if beta > 0:
             # Perform regularization
-            Id = xp.eye(Gamma.shape[-1], dtype=Gamma.dtype)
+            Id = jnp.eye(Gamma.shape[-1], dtype=Gamma.dtype)
             # repeat the identity matrix for each pixel
-            Id = xp.tile(Id, (Gamma.shape[0], Gamma.shape[1], 1, 1))
+            Id = jnp.tile(Id, (Gamma.shape[0], Gamma.shape[1], 1, 1))
             Gamma = (1 - beta) * Gamma + beta * Id
 
-        Gamma_inv = xp.linalg.inv(Gamma)
-        V = _get_eigvecs(Gamma_inv * C_arrays, use_evd=False)
+        Gamma_inv = jnp.linalg.inv(Gamma)
+        V = get_eigvecs(Gamma_inv * C_arrays, use_evd=False)
         column_idx = 0
 
     # The shape of V is (rows, cols, nslc, nslc)
@@ -236,236 +236,19 @@ def mle_stack(
     # The phase estimate on the reference day will be size (rows, cols)
     ref = evd_estimate[:, :, reference_idx]
     # Make sure each still has 3 dims, then reference all phases to `ref`
-    evd_estimate = evd_estimate * xp.conjugate(ref[:, :, None])
+    evd_estimate = evd_estimate * jnp.conjugate(ref[:, :, None])
 
     # Return the phase (still as a GPU array)
-    phase_stack = xp.angle(evd_estimate)
+    phase_stack = jnp.angle(evd_estimate)
     # Move the SLC dimension to the front (to match the SLC stack shape)
-    return xp.moveaxis(phase_stack, -1, 0)
+    return jnp.moveaxis(phase_stack, -1, 0)
 
 
-def _get_eigvecs(C, use_evd: bool = False):
-    xp = get_array_module(C)
-    if xp == np:
-        # The block splitting isn't needed for numpy.
-        # return np.linalg.eigh(C)[1]
-        return _get_eigvecs_jax(C, use_evd=use_evd)
-
-    # Make sure we don't overflow: cupy https://github.com/cupy/cupy/issues/7261
-    # The work_size must be less than 2**30, so
-    # Keep (rows*cols) approximately less than 2**21? make it 2**20 to be safer
-    # see https://github.com/cupy/cupy/issues/7261#issuecomment-1362991323 for that math
-    rows, cols, _, _ = C.shape
-    max_batch_size = 2**20
-    num_blocks = 1 + (rows * cols) // max_batch_size
-    if num_blocks > 1:
-        # V_out wil lbe the eigenvectors, shape (rows, cols, nslc, nslc)
-        V_out = xp.empty_like(C)
-        # Split the computation into blocks
-        # This is to avoid overflow errors in cupy.linalg.eigh
-        for i in range(num_blocks):
-            # get chunks of rows at a time
-            start = i * (rows // num_blocks)
-            end = (i + 1) * (rows // num_blocks)
-            if i == num_blocks - 1:
-                end = rows
-            V_out[start:end] = xp.linalg.eigh(C[start:end])[1]
-    else:
-        _, V_out = xp.linalg.eigh(C)
-    return V_out
-
-
-@partial(jit, static_argnames=("use_evd",))
-def _get_eigvecs_jax(C_arrays: ArrayLike, use_evd: bool = False) -> Array:
-    # Subset index for scipy.eigh: larges eig for EVD. Smallest for EMI.
-    subset_idx = C_arrays.shape[-1] - 1 if use_evd else 0
-
-    def get_top_eigvecs(C: Array):
-        # The eigenvalues in ascending order, each repeated according
-        # The column ``eigenvectors[:, i]`` is the normalized eigenvector
-        # corresponding to the eigenvalue ``eigenvalues[i]``.
-        return jnp.linalg.eigh(C)[1][:, [subset_idx]]
-
-    # vmap over the first 2 dimensions (rows, cols)
-    get_eigvecs_block = vmap(vmap(get_top_eigvecs))
-    return get_eigvecs_block(C_arrays)
-
-
-def get_largest_eigenvector(mat: ArrayLike, num_iters: int = 15) -> Array:
-    """Use the power iteration method for find the largest eigenvector of `a`.
-
-    https://math.stackexchange.com/questions/271864/how-to-compute-the-smallest-eigenvalue-using-the-power-iteration-algorithm
-    """
-    # Use lax.fori_loop
-    # https://jax.readthedocs.io/en/latest/_autosummary/jax.lax.fori_loop.html#jax.lax.fori_loop
-    # def fori_loop(lower, upper, body_fun, init_val):
-    #     val = init_val
-    #     for i in range(lower, upper):
-    #         val = body_fun(i, val)
-    #     return val
-
-    # The body function is just another matrix multiply, followed by normalzing
-    def body_fun(_i, val):
-        new_mat = mat @ val
-        # Now divide by norm
-        return new_mat / jnp.linalg.norm(new_mat)
-
-    # Start with some unit vector. Make it zero phase:
-    m, n = mat.shape
-    v0 = jnp.ones(m, dtype=mat.dtype) / jnp.sqrt(m)
-    v_final = lax.fori_loop(1, num_iters, body_fun, v0, unroll=True)
-    # Also find the eigenvalue of the matrix
-    # eigenvalue = jnp.linalg.norm(mat @ v_final)
-    return v_final[:, None]
-
-
-@partial(jit, static_argnames=("num_iters",))
-def get_largest_stack(C_arrays: ArrayLike, num_iters: int = 15) -> Array:
-    func_cols = vmap(lambda x: get_largest_eigenvector(x, num_iters))
-    func_stack = vmap(func_cols)
-    return func_stack(C_arrays)
-
-
-@partial(jit, static_argnames=("is_unit_vector",))
-def rayleigh(A: ArrayLike, v: ArrayLike, is_unit_vector: bool = True) -> Array:
-    r"""Compute the Rayleigh quotient for a matrix A and unit vector v.
-
-    https://en.wikipedia.org/wiki/Rayleigh_quotient
-
-    \[
-    R(A, v) = \\frac{v^{*} A v}{v^{*} v}
-    \]
-
-    If v is a unit vector, the Rayleigh quotient is just the numerator
-    """
-    if is_unit_vector:
-        return v.T.conj() @ A @ v
-    else:
-        return v.T.conj() @ A @ v / v.T.conj() @ v
-
-
-def get_largest_evec_and_evalue(
-    mat: ArrayLike, num_iters: int = 20
-) -> tuple[Array, Array]:
-    """Get the largest eigvec, and also the residuals from each power iteration."""
-
-    # Use lax.scan to collect residuals
-    # https://jax.readthedocs.io/en/latest/_autosummary/jax.lax.scan.html#jax.lax.scan
-    # def scan(f, init, xs, length=None):
-    #     if xs is None:
-    #       xs = [None] * length
-    #     carry = init
-    #     ys = []
-    #     for x in xs:
-    #       carry, y = f(carry, x)
-    #       ys.append(y)
-    #     return carry, np.stack(ys)
-    def body_fun(carry, _unused):
-        # Unpack carry to vector and residual
-        old_vec = carry
-        # Do next matmul
-        new_vec = mat @ old_vec
-        # Now divide by norm
-        new_normed_vec = new_vec / jnp.linalg.norm(new_vec)
-        # # Find the difference of last vector and this one
-        # resid_new = jnp.linalg.norm(new_normed_vec - old_vec)
-        # Get the current value of the eigenvalue (rayleigh quotient)
-        eigenvalue = rayleigh(mat, new_normed_vec, is_unit_vector=True)
-        return new_normed_vec, eigenvalue
-
-    m, n = mat.shape
-    v0 = jnp.ones(m, dtype=mat.dtype) / jnp.sqrt(m)
-    # v_final, residuals = lax.scan(body_fun, v0, None, length=num_iters)
-    return lax.scan(body_fun, v0, None, length=num_iters)
-
-
-@partial(jit, static_argnames=("num_iters",))
-def get_largest_stack_plus_resid(C_arrays: ArrayLike, num_iters: int = 15) -> Array:
-    func_cols = vmap(lambda x: get_largest_evec_and_evalue(x, num_iters))
-    func_stack = vmap(func_cols)
-    return func_stack(C_arrays)
-
-
-def get_largest_while(
-    mat: ArrayLike, max_iters: int = 25, tol: float = 1e-5
-) -> tuple[Array, Array]:
-    """Use a jax while loop to find the largest eigenvector."""
-    # Format for a `lax.while_loop`
-    # def while_loop(cond_fun, body_fun, init_val):
-    #     val = init_val
-    #     while cond_fun(val):
-    #         val = body_fun(val)
-    #     return val
-
-    # We will loop while the change in eigenvalue is greater than tol
-    def cond_fun(val):
-        _new_vec, _old_vec, eig_residual, max_phase_diff, cur_iter = val
-        return (eig_residual > tol) & (cur_iter < max_iters)
-
-    # The body function is another matrix multiply, followed by normalizing
-    def body_fun(val):
-        prev_vec, old_vec, eig_residual, max_phase_diff, cur_iter = val
-        # Do next matmul
-        next_vec = mat @ prev_vec
-        # Now divide by norm
-        next_normed_vec = next_vec / jnp.linalg.norm(next_vec)
-
-        # Get last and current value of the eigenvalue for loop cond
-        eigenvalue_new = rayleigh(mat, next_normed_vec, is_unit_vector=True)
-        eigenvalue_old = rayleigh(mat, old_vec, is_unit_vector=True)
-        # Also get the max elementwise phase-difference of the eigenvectors
-        max_phase_diff = jnp.max(jnp.abs(jnp.angle(next_normed_vec * old_vec.conj())))
-        # jax.debug.print("max phase diff: {}", max_phase_diff)
-        eig_residual = jnp.abs(eigenvalue_new - eigenvalue_old)
-        return next_normed_vec, prev_vec, eig_residual, max_phase_diff, cur_iter + 1
-
-    # Start with some unit vector. Make it zero phase:
-    m, n = mat.shape
-    v0 = jnp.ones(m, dtype=mat.dtype) / jnp.sqrt(m)
-    old_v0 = 0 * v0  # Dummy val to have some residual
-    resid0 = 1e3
-    v_final, _, eig_residual, max_phase_diff, n_iters = lax.while_loop(
-        cond_fun, body_fun, (v0, old_v0, resid0, resid0, 0)
-    )
-    # Also find the eigenvalue of the matrix
-    eigenvalue = rayleigh(mat, v_final, is_unit_vector=True)
-    return v_final[:, None], eigenvalue, eig_residual, max_phase_diff, n_iters
-
-
-@partial(jit, static_argnames=("num_iters",))
-def get_largest_stack_while(C_arrays: ArrayLike, num_iters: int = 15) -> Array:
-    func_cols = vmap(lambda x: get_largest_evec_and_evalue(x, num_iters))
-    func_stack = vmap(func_cols)
-    return func_stack(C_arrays)
-
-
-def rayleigh_quotient_step(matrix: ArrayLike, q: ArrayLike):
-    iten = jnp.eye(matrix.shape[0], dtype=matrix.dtype)
-    rq = jnp.dot(jnp.conj(q).T, jnp.dot(matrix, q)) / jnp.dot(jnp.conj(q).T, q)
-    # w, _ = jnp.linalg.solve(matrix - rq * iten, q, tol=1e-6)
-    w = jnp.linalg.solve(matrix - rq * iten, q)
-    q_new = w / jnp.linalg.norm(w)
-    return q_new, q_new
-
-
-def rayleigh_quotient_iteration(matrix: ArrayLike, max_iter: int = 100):
-    n = matrix.shape[0]
-    # q0 = jax.random.normal(jax.random.PRNGKey(0), (n,))
-    q0 = jnp.ones((n,), dtype=matrix.dtype) / jnp.sqrt(n)
-    q0 /= jnp.linalg.norm(q0)
-
-    def f(q, _):
-        return rayleigh_quotient_step(matrix, q)
-
-    q_final, _ = lax.scan(f, q0, None, length=max_iter)
-    return q_final
-
-
-def _check_all_nans(slc_stack: np.ndarray):
+def _check_all_nans(slc_stack: ArrayLike):
     """Check for all NaNs in each SLC of the stack."""
-    nans = np.isnan(slc_stack)
+    nans = jnp.isnan(slc_stack)
     # Check that there are no SLCS which are all nans:
-    bad_slc_idxs = np.where(np.all(nans, axis=(1, 2)))[0]
+    bad_slc_idxs = jnp.where(jnp.all(nans, axis=(1, 2)))[0]
     if bad_slc_idxs.size > 0:
         msg = f"slc_stack[{bad_slc_idxs}] out of {len(slc_stack)} are all NaNs."
         raise PhaseLinkRuntimeError(msg)

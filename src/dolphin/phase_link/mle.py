@@ -305,7 +305,7 @@ def get_largest_eigenvector(mat: ArrayLike, num_iters: int = 15) -> Array:
     #     return val
 
     # The body function is just another matrix multiply, followed by normalzing
-    def body_fun(i, val):
+    def body_fun(_i, val):
         new_mat = mat @ val
         # Now divide by norm
         return new_mat / jnp.linalg.norm(new_mat)
@@ -326,7 +326,27 @@ def get_largest_stack(C_arrays: ArrayLike, num_iters: int = 15) -> Array:
     return func_stack(C_arrays)
 
 
-def get_largest_evec_plus_resid(mat, num_iters) -> tuple[Array, Array]:
+@partial(jit, static_argnames=("is_unit_vector",))
+def rayleigh(A: ArrayLike, v: ArrayLike, is_unit_vector: bool = True) -> Array:
+    r"""Compute the Rayleigh quotient for a matrix A and unit vector v.
+
+    https://en.wikipedia.org/wiki/Rayleigh_quotient
+
+    \[
+    R(A, v) = \\frac{v^{*} A v}{v^{*} v}
+    \]
+
+    If v is a unit vector, the Rayleigh quotient is just the numerator
+    """
+    if is_unit_vector:
+        return v.T.conj() @ A @ v
+    else:
+        return v.T.conj() @ A @ v / v.T.conj() @ v
+
+
+def get_largest_evec_and_evalue(
+    mat: ArrayLike, num_iters: int = 20
+) -> tuple[Array, Array]:
     """Get the largest eigvec, and also the residuals from each power iteration."""
 
     # Use lax.scan to collect residuals
@@ -347,9 +367,11 @@ def get_largest_evec_plus_resid(mat, num_iters) -> tuple[Array, Array]:
         new_vec = mat @ old_vec
         # Now divide by norm
         new_normed_vec = new_vec / jnp.linalg.norm(new_vec)
-        # Find the difference of last vector and this one
-        resid_new = jnp.linalg.norm(new_normed_vec - old_vec)
-        return new_normed_vec, resid_new
+        # # Find the difference of last vector and this one
+        # resid_new = jnp.linalg.norm(new_normed_vec - old_vec)
+        # Get the current value of the eigenvalue (rayleigh quotient)
+        eigenvalue = rayleigh(mat, new_normed_vec, is_unit_vector=True)
+        return new_normed_vec, eigenvalue
 
     m, n = mat.shape
     v0 = jnp.ones(m, dtype=mat.dtype) / jnp.sqrt(m)
@@ -359,20 +381,69 @@ def get_largest_evec_plus_resid(mat, num_iters) -> tuple[Array, Array]:
 
 @partial(jit, static_argnames=("num_iters",))
 def get_largest_stack_plus_resid(C_arrays: ArrayLike, num_iters: int = 15) -> Array:
-    func_cols = vmap(lambda x: get_largest_evec_plus_resid(x, num_iters))
+    func_cols = vmap(lambda x: get_largest_evec_and_evalue(x, num_iters))
     func_stack = vmap(func_cols)
     return func_stack(C_arrays)
 
 
-def get_largest_while(mat, tol: float = 1e-5) -> tuple[Array, Array]:
+def get_largest_while(
+    mat: ArrayLike, max_iters: int = 25, tol: float = 1e-5
+) -> tuple[Array, Array]:
     """Use a jax while loop to find the largest eigenvector."""
+    # Format for a `lax.while_loop`
+    # def while_loop(cond_fun, body_fun, init_val):
+    #     val = init_val
+    #     while cond_fun(val):
+    #         val = body_fun(val)
+    #     return val
+
+    # We will loop while the change in eigenvalue is greater than tol
+    def cond_fun(val):
+        _new_vec, _old_vec, eig_residual, max_phase_diff, cur_iter = val
+        return (eig_residual > tol) & (cur_iter < max_iters)
+
+    # The body function is another matrix multiply, followed by normalizing
+    def body_fun(val):
+        prev_vec, old_vec, eig_residual, max_phase_diff, cur_iter = val
+        # Do next matmul
+        next_vec = mat @ prev_vec
+        # Now divide by norm
+        next_normed_vec = next_vec / jnp.linalg.norm(next_vec)
+
+        # Get last and current value of the eigenvalue for loop cond
+        eigenvalue_new = rayleigh(mat, next_normed_vec, is_unit_vector=True)
+        eigenvalue_old = rayleigh(mat, old_vec, is_unit_vector=True)
+        # Also get the max elementwise phase-difference of the eigenvectors
+        max_phase_diff = jnp.max(jnp.abs(jnp.angle(next_normed_vec * old_vec.conj())))
+        # jax.debug.print("max phase diff: {}", max_phase_diff)
+        eig_residual = jnp.abs(eigenvalue_new - eigenvalue_old)
+        return next_normed_vec, prev_vec, eig_residual, max_phase_diff, cur_iter + 1
+
+    # Start with some unit vector. Make it zero phase:
+    m, n = mat.shape
+    v0 = jnp.ones(m, dtype=mat.dtype) / jnp.sqrt(m)
+    old_v0 = 0 * v0  # Dummy val to have some residual
+    resid0 = 1e3
+    v_final, _, eig_residual, max_phase_diff, n_iters = lax.while_loop(
+        cond_fun, body_fun, (v0, old_v0, resid0, resid0, 0)
+    )
+    # Also find the eigenvalue of the matrix
+    eigenvalue = rayleigh(mat, v_final, is_unit_vector=True)
+    return v_final[:, None], eigenvalue, eig_residual, max_phase_diff, n_iters
+
+
+@partial(jit, static_argnames=("num_iters",))
+def get_largest_stack_while(C_arrays: ArrayLike, num_iters: int = 15) -> Array:
+    func_cols = vmap(lambda x: get_largest_evec_and_evalue(x, num_iters))
+    func_stack = vmap(func_cols)
+    return func_stack(C_arrays)
 
 
 def rayleigh_quotient_step(matrix: ArrayLike, q: ArrayLike):
-    I = jnp.eye(matrix.shape[0], dtype=matrix.dtype)
+    iten = jnp.eye(matrix.shape[0], dtype=matrix.dtype)
     rq = jnp.dot(jnp.conj(q).T, jnp.dot(matrix, q)) / jnp.dot(jnp.conj(q).T, q)
-    # w, _ = jnp.linalg.solve(matrix - rq * I, q, tol=1e-6)
-    w = jnp.linalg.solve(matrix - rq * I, q)
+    # w, _ = jnp.linalg.solve(matrix - rq * iten, q, tol=1e-6)
+    w = jnp.linalg.solve(matrix - rq * iten, q)
     q_new = w / jnp.linalg.norm(w)
     return q_new, q_new
 
@@ -382,7 +453,10 @@ def rayleigh_quotient_iteration(matrix: ArrayLike, max_iter: int = 100):
     # q0 = jax.random.normal(jax.random.PRNGKey(0), (n,))
     q0 = jnp.ones((n,), dtype=matrix.dtype) / jnp.sqrt(n)
     q0 /= jnp.linalg.norm(q0)
-    f = lambda q, _: rayleigh_quotient_step(matrix, q)
+
+    def f(q, _):
+        return rayleigh_quotient_step(matrix, q)
+
     q_final, _ = lax.scan(f, q0, None, length=max_iter)
     return q_final
 

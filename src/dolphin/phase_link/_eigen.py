@@ -7,7 +7,13 @@ import jax.numpy as jnp
 from jax import Array, jit, lax, vmap
 from jax.typing import ArrayLike
 
-__all__ = ["get_eigvecs", "eigh_largest", "eigh_largest_stack"]
+__all__ = [
+    "get_eigvecs",
+    "eigh_largest",
+    "eigh_largest_stack",
+    "eigh_smallest",
+    "eigh_smallest_stack",
+]
 
 
 @partial(jit, static_argnames=("use_evd",))
@@ -47,14 +53,11 @@ def rayleigh(A: ArrayLike, v: ArrayLike, is_unit_vector: bool = True) -> Array:
 def eigh_largest(
     mat: ArrayLike, max_iters: int = 25, tol: float = 1e-4
 ) -> tuple[Array, float, float]:
-    """For only the largest eigen pair for hermitian `mat`.
+    """Find only the largest eigen pair for Hermitian `mat`.
 
     Notes
     -----
     Uses the power iteration method ([1]_)
-
-    This function can also be used to find the smallest eigenvalue: [2]_
-
 
     Parameters
     ----------
@@ -67,12 +70,12 @@ def eigh_largest(
 
     Returns
     -------
-    largest_eigenvector : Array
-        The eigenvector corresponding to the largest eigenvalue of `mat`
     eigenvalue : float
         The largest eigenvalue of `mat`
         Note: This returns a float, even if `mat` is complex, since it assumes
         `mat` is Hermitian.
+    largest_eigenvector : Array
+        The eigenvector corresponding to the largest eigenvalue of `mat`
     eigenvalue_residual : float
         The residual of the `eigenvalue` of the power iteration algorithm from the
         last iteration.
@@ -118,14 +121,14 @@ def eigh_largest(
     # Get the residual for debug/quality information
     eig_residual = jnp.abs(last_eigenvalue - pre_eigenvalue)
 
-    return v_final[:, None], last_eigenvalue, eig_residual
+    return jnp.real(last_eigenvalue), v_final[:, None], jnp.float32(eig_residual)
 
 
 @partial(jit, static_argnames=("max_iters", "tol"))
 def eigh_largest_stack(
-    C_arrays: ArrayLike, max_iters: int = 50, tol: float = 1e-4
+    C_arrays: ArrayLike, max_iters: int = 60, tol: float = 1e-4
 ) -> tuple[Array, Array, Array]:
-    """For only the largest eigen pair for a stack of hermitian matrices.
+    """Find only the smallest largest pair for a stack of Hermitian matrices.
 
     See Also
     --------
@@ -143,13 +146,13 @@ def eigh_largest_stack(
 
     Returns
     -------
-    largest_eigenvectors : Array
-        The eigenvectors corresponding to the largest eigenvalues.
-        shape = (num_rows, num_cols, M, 1)
     eigenvalues : Array
         The largest eigenvalues of `C_arrays`. Shape: (num_rows, num_cols)
         Note: This returns a float, even if `mat` is complex, since it assumes
         `mat` is Hermitian.
+    largest_eigenvectors : Array
+        The eigenvectors corresponding to the largest eigenvalues.
+        shape = (num_rows, num_cols, M, 1)
     eigenvalue_residuals : Array
         The residual of the `eigenvalue` of the power iteration algorithm from the
         last iteration.
@@ -158,8 +161,107 @@ def eigh_largest_stack(
     References
     ----------
     .. [1] https://mathreview.uwaterloo.ca/archive/voli/1/panju.pdf
-    .. [2] https://math.stackexchange.com/questions/271864/how-to-compute-the-smallest-eigenvalue-using-the-power-iteration-algorithm
     """
     func_cols = vmap(lambda x: eigh_largest(x, max_iters, tol))
+    func_stack = vmap(func_cols)
+    return func_stack(C_arrays)
+
+
+def eigh_smallest(
+    mat: ArrayLike, max_iters: int = 100, tol: float = 1e-5
+) -> tuple[Array, float, float]:
+    """Find only the smallest eigen pair for Hermitian `mat`.
+
+    Notes
+    -----
+    This function uses `eigh_largest`, but first transforms `mat` so that
+    the smallest (positive) eigenvalue is now the largest (negative) [1]_.
+
+    This function assumes that `mat` is a *coherence* matrix so that the largest
+    possible eigenvalue is N for an (N, N) coherence matrix.
+
+
+    Parameters
+    ----------
+    mat : ArrayLike
+        The matrix to find the eigenvector of.
+    max_iters : int, optional
+        The maximum number of iterations to run, by default 25
+    tol : float, optional
+        The tolerance for the eigenvalue residual, by default 1e-4
+
+    Returns
+    -------
+    eigenvalue : float
+        The smallest eigenvalue of `mat`
+        Note: This returns a float, even if `mat` is complex, since it assumes
+        `mat` is Hermitian.
+    largest_eigenvector : Array
+        The eigenvector corresponding to the smallest eigenvalue of `mat`
+    eigenvalue_residual : float
+        The residual of the `eigenvalue` of the power iteration algorithm from the
+        last iteration.
+
+    References
+    ----------
+    .. [1] https://mathreview.uwaterloo.ca/archive/voli/1/panju.pdf
+    .. [2] https://math.stackexchange.com/questions/271864/how-to-compute-the-smallest-eigenvalue-using-the-power-iteration-algorithm
+    """
+    m, n = mat.shape
+    assert m == n
+    Id = jnp.eye(m, dtype=mat.dtype)
+    # Subtract n*I
+    mat_neg = mat - n * Id
+    # Find the largest (in absolute value) eigen pair
+    eig_neg, vec_neg, residual = eigh_largest(mat_neg, max_iters, tol)
+
+    # Add back to the eigenvalue
+    eig = eig_neg + n
+    # Get the residual for debug/quality information
+    return eig, vec_neg, residual
+
+    # # repeat the identity matrix for each pixel
+    # Id = jnp.tile(Id, (mat.shape[0], mat.shape[1], 1, 1))
+
+
+@partial(jit, static_argnames=("max_iters", "tol"))
+def eigh_smallest_stack(
+    C_arrays: ArrayLike, max_iters: int = 50, tol: float = 1e-4
+) -> tuple[Array, Array, Array]:
+    """Find only the smallest eigen pair for a stack of Hermitian matrices.
+
+    See Also
+    --------
+    `eigh_smallest`
+
+    Parameters
+    ----------
+    C_arrays : ArrayLike
+        The matrices to find the smallest eigenvector of.
+        Shape: (num_rows, num_cols, M, M)
+    max_iters : int, optional
+        The maximum number of iterations to run, by default 25
+    tol : float, optional
+        The tolerance for the eigenvalue residual, by default 1e-4
+
+    Returns
+    -------
+    eigenvalues : Array
+        The smallest eigenvalues of `C_arrays`. Shape: (num_rows, num_cols)
+        Note: This returns a float, even if `mat` is complex, since it assumes
+        `mat` is Hermitian.
+    smallest_eigenvectors : Array
+        The eigenvectors corresponding to the smallest eigenvalues.
+        shape = (num_rows, num_cols, M, 1)
+    eigenvalue_residuals : Array
+        The residual of the `eigenvalue` of the power iteration algorithm from the
+        last iteration.
+        Shape: (num_rows, num_cols)
+
+    References
+    ----------
+    .. [1] https://mathreview.uwaterloo.ca/archive/voli/1/panju.pdf
+    """
+    func_cols = vmap(lambda x: eigh_smallest(x, max_iters, tol))
     func_stack = vmap(func_cols)
     return func_stack(C_arrays)

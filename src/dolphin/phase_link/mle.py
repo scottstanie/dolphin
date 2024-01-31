@@ -12,7 +12,7 @@ from jax.typing import ArrayLike
 from dolphin._types import HalfWindow, Strides
 from dolphin.utils import take_looks
 
-from ._eigen import get_eigvecs
+from ._eigen import eigh_largest_stack, eigh_smallest_stack
 
 logger = logging.getLogger(__name__)
 
@@ -209,12 +209,11 @@ def mle_stack(
     """
     # estimate the wrapped phase based on the EMI paper
     # *smallest* eigenvalue decomposition of the (|Gamma|^-1  *  C) matrix
-    Gamma = jnp.abs(C_arrays)
 
     if use_evd:
-        V = get_eigvecs(C_arrays, use_evd=True)
-        column_idx = -1
+        eigvals, V, residuals = eigh_largest_stack(C_arrays)
     else:
+        Gamma = jnp.abs(C_arrays)
         if beta > 0:
             # Perform regularization
             Id = jnp.eye(Gamma.shape[-1], dtype=Gamma.dtype)
@@ -223,15 +222,10 @@ def mle_stack(
             Gamma = (1 - beta) * Gamma + beta * Id
 
         Gamma_inv = jnp.linalg.inv(Gamma)
-        V = get_eigvecs(Gamma_inv * C_arrays, use_evd=False)
-        column_idx = 0
+        eigvals, V, residuals = eigh_smallest_stack(Gamma_inv * C_arrays)
 
-    # The shape of V is (rows, cols, nslc, nslc)
-    # at pixel (r, c), the columns of V[r, c] are the eigenvectors.
-    # They're ordered by increasing eigenvalue, so the first column is the
-    # eigenvector corresponding to the smallest eigenvalue (phase solution for EMI),
-    # and the last column is for the largest eigenvalue (used by EVD)
-    evd_estimate = V[:, :, :, column_idx]
+    # The shape of V is (rows, cols, nslc, 1)
+    evd_estimate = V[:, :, :, 0]
 
     # The phase estimate on the reference day will be size (rows, cols)
     ref = evd_estimate[:, :, reference_idx]

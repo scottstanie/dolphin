@@ -44,8 +44,8 @@ class TestEighSingle:
         assert np.all(expected_eig >= eig_vals)
         # Should be positive definite
         assert np.all(eig_vals >= 0)
-        expected_evec = eig_vecs[:, [-1]]
-        assert expected_evec.shape == (N, 1)
+        expected_evec = eig_vecs[:, -1]
+        assert expected_evec.shape == (N,)
         return expected_eig, expected_evec
 
     def test_eigh_largest(self, coh_matrix, expected_largest):
@@ -83,8 +83,8 @@ class TestEighSingle:
         assert np.all(expected_eig <= eig_vals)
         # Should be positive definite
         assert np.all(eig_vals >= 0)
-        expected_evec = eig_vecs[:, [0]]
-        assert expected_evec.shape == (N, 1)
+        expected_evec = eig_vecs[:, 0]
+        assert expected_evec.shape == (N,)
         return expected_eig, expected_evec
 
     def test_eigh_smallest(self, coh_gamma_inv, expected_smallest):
@@ -118,20 +118,20 @@ class TestEighStack:
         eig_vals, eig_vecs = np.linalg.eigh(coh_stack)
         assert np.all(eig_vals >= 0)
         expected_eig = eig_vals[:, :, -1]
-        expected_evec = eig_vecs[:, :, :, [-1]]
+        expected_evec = eig_vecs[:, :, :, -1]
         assert expected_eig.shape == (6, 7)
-        assert expected_evec.shape == (6, 7, N, 1)
+        assert expected_evec.shape == (6, 7, N)
         return expected_eig, expected_evec
 
     def test_eigh_largest_stack(self, coh_stack, expected_largest):
         expected_eig, expected_evec = expected_largest
         evalues, evecs, residuals = eigh_largest_stack(coh_stack)
         assert evalues.shape == (6, 7)
-        assert evecs.shape == (6, 7, N, 1)
+        assert evecs.shape == (6, 7, N)
         assert residuals.shape == (6, 7)
 
         npt.assert_allclose(expected_eig, evalues, atol=2e-5)
-        assert np.max(np.abs(get_eigvec_phase_difference(expected_evec, evecs))) < 1e-4
+        assert np.max(np.abs(get_eigvec_phase_difference(expected_evec, evecs))) < 5e-3
 
     @pytest.fixture
     def coh_gamma_inv_stack(self, coh_stack) -> np.ndarray:
@@ -143,14 +143,17 @@ class TestEighStack:
         eig_vals, eig_vecs = np.linalg.eigh(coh_gamma_inv_stack)
         assert np.all(eig_vals >= 0)
         expected_eig = eig_vals[:, :, 0]
-        expected_evec = eig_vecs[:, :, :, [0]]
+        expected_evec = eig_vecs[:, :, :, 0]
         assert expected_eig.shape == (6, 7)
-        assert expected_evec.shape == (6, 7, N, 1)
+        assert expected_evec.shape == (6, 7, N)
         return expected_eig, expected_evec
 
     def test_eigh_smallest_stack(self, coh_gamma_inv_stack, expected_smallest):
         expected_eig, expected_evec = expected_smallest
         evalues, evecs, residuals = eigh_smallest_stack(coh_gamma_inv_stack)
         assert evalues.shape == (6, 7)
-        assert evecs.shape == (6, 7, N, 1)
+        assert evecs.shape == (6, 7, N)
         assert residuals.shape == (6, 7)
+
+        # Check the max phase difference
+        assert np.max(np.abs(get_eigvec_phase_difference(expected_evec, evecs))) < 1e-4

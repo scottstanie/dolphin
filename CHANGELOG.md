@@ -21,6 +21,7 @@ Added
 
 Removed:
 - `pymp`
+- `cupy` from optional deps (superceded by `jax`)
 
 # [v0.11.0](https://github.com/isce-framework/dolphin/compare/v0.10.0...v0.11.0) - 2023-01-24
 

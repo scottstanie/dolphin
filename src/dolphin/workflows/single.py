@@ -155,6 +155,8 @@ def run_wrapped_phase_single(
         loader.queue_read(in_rows, in_cols)
         blocks.append(b)
 
+    from tqdm.auto import tqdm
+
     logger.info(f"Iterating over {block_shape} blocks, {len(blocks)} total")
     for (
         (out_rows, out_cols),
@@ -162,7 +164,7 @@ def run_wrapped_phase_single(
         (in_rows, in_cols),
         (in_no_pad_rows, in_no_pad_cols),
         (in_trim_rows, in_trim_cols),
-    ) in blocks:
+    ) in tqdm(blocks):
         logger.debug(f"{out_rows = }, {out_cols = }, {in_rows = }, {in_no_pad_rows = }")
 
         cur_data, (read_rows, read_cols) = loader.get_data()

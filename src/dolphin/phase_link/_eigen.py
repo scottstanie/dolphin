@@ -5,6 +5,7 @@ from functools import partial
 
 import jax.numpy as jnp
 from jax import Array, jit, lax, vmap
+from jax.numpy.linalg import norm
 from jax.typing import ArrayLike
 
 __all__ = [
@@ -31,9 +32,6 @@ def rayleigh(A: ArrayLike, v: ArrayLike, is_unit_vector: bool = True) -> Array:
         return v.T.conj() @ A @ v
     else:
         return (v.T.conj() @ A @ v) / (v.T.conj() @ v)
-
-
-import jax.debug
 
 
 def eigh_largest(
@@ -86,7 +84,7 @@ def eigh_largest(
         # Do next matmul
         next_vec = mat @ cur_vec
         # Normalize to a unit vector
-        next_normed_vec = next_vec / jnp.linalg.norm(next_vec)
+        next_normed_vec = next_vec / norm(next_vec)
 
         # Get current eigenvalue for the loop cond
         new_eigenvalue = rayleigh(mat, next_normed_vec, is_unit_vector=True)
@@ -104,7 +102,7 @@ def eigh_largest(
     # Start with some unit vector. Make it zero phase:
     m, n = mat.shape
     v0 = (jnp.ones(m) + 1j * jnp.ones(m)).astype(mat.dtype)
-    v0 /= jnp.linalg.norm(v0)
+    v0 /= norm(v0)
     # Dummy vals for starting vec (0) and eigenvalues
     eig0 = jnp.array(1.0, dtype=mat.dtype)
     v_final, _v_prev, last_eigenvalue, last_max_phase_diff, _n_iters = lax.while_loop(
@@ -113,7 +111,6 @@ def eigh_largest(
         (v0, -v0, eig0, 1e3, 0),
     )
 
-    jax.debug.print("{} iterations", (_n_iters))
     return jnp.real(last_eigenvalue), v_final, jnp.float32(last_max_phase_diff)
 
 
@@ -261,108 +258,53 @@ def eigh_smallest_stack(
     return func_stack(C_arrays)
 
 
-@partial(jit, static_argnames=("max_iters", "tol"))
-def eigh_closest_to_mu(
-    mat: ArrayLike, mu: float = 1.0, max_iters: int = 100, tol: float = 1e-4
-) -> tuple[Array, float, float]:
-    mat_minus_mu_i = mat - mu * jnp.eye(mat.shape[0], dtype=mat.dtype)
-    eig, vec, residual = eigh_largest(jnp.linalg.inv(mat_minus_mu_i), max_iters, tol)
+@partial(jit, static_argnames=("mu", "max_iters", "tol"))
+def eigh_closest_to_mu_stack(
+    C_arrays: ArrayLike, mu: float, max_iters: int = 100, tol: float = 1e-4
+) -> tuple[Array, Array, Array]:
+    """Find the eigen pair closest to a given value of `mu`.
 
-    # largest_of_inv = 1 / (lam - mu)
-    # (lam - mu) = 1 / largest_of_inv
-    # lam = (1 / largest_of_inv) + mu
-    (1 / eig) + mu
+    See Also
+    --------
+    `eigh_closest_to_mu`
 
-    # The body function is another matrix multiply, followed by normalizing
-    def body_fun(val: tuple[Array, Array, Array, Array, int]):
-        cur_vec, old_vec, prev_eigenvalue, _old_max_phase_diff, cur_iter = val
-        # Do next matmul
-        next_vec = mat @ cur_vec
-        # Normalize to a unit vector
-        next_normed_vec = next_vec / jnp.linalg.norm(next_vec)
+    Parameters
+    ----------
+    C_arrays : ArrayLike
+        The matrices to find the eigenvector of.
+    """
+    func_cols = vmap(lambda x: eigh_closest_to_mu(x, mu, max_iters, tol))
+    func_stack = vmap(func_cols)
+    return func_stack(C_arrays)
 
-        # Get current eigenvalue for the loop cond
-        new_eigenvalue = rayleigh(mat, next_normed_vec, is_unit_vector=True)
 
-        # Get the max element-wise phase-difference to check convergence
-        phase_diff = jnp.angle(next_normed_vec * old_vec.conj())
-        max_phase_diff = jnp.max(jnp.abs(phase_diff))
-        return next_normed_vec, cur_vec, new_eigenvalue, max_phase_diff, cur_iter + 1
-
-    def cond_fun(val: tuple[Array, Array, Array, Array, int]):
-        new_vec, old_vec, _new_eigenvalue, max_phase_diff, cur_iter = val
-        # We will loop while the max phase change is greater than `tol`
-        return (max_phase_diff > tol) & (cur_iter < max_iters)
-
-    # Start with some unit vector. Make it zero phase:
-    m, n = mat.shape
-    v0 = (jnp.ones(m) + 1j * jnp.ones(m)).astype(mat.dtype)
-    v0 /= jnp.linalg.norm(v0)
-    # Dummy vals for starting vec (0) and eigenvalues
-    eig0 = jnp.array(1.0, dtype=mat.dtype)
-    v_final, _v_prev, last_eigenvalue, last_max_phase_diff, _n_iters = lax.while_loop(
-        cond_fun,
-        body_fun,
-        (v0, -v0, eig0, 1e3, 0),
-    )
-
-    jax.debug.print("{} iterations", (_n_iters))
-    return jnp.real(last_eigenvalue), v_final, jnp.float32(last_max_phase_diff)
+from jax.numpy.linalg import solve
 
 
 # Section 2.1
 # https://services.math.duke.edu/~jtwong/math361-2019/lectures/Lec10eigenvalues.pdf
 @partial(jit, static_argnames=("mu", "max_iters", "tol"))
-def eigh_closest_to_mu_rayleigh(
+def eigh_closest_to_mu(
     mat: ArrayLike, mu: float, max_iters: int = 100, tol: float = 1e-4
 ):
     Id = jnp.eye(mat.shape[0], dtype=mat.dtype)
 
-    # from jax.numpy.linalg import norm, solve
-    from jax.numpy.linalg import norm
-    from jax.scipy.linalg import lu_factor, lu_solve
-    # from jax.scipy.linalg import lu_factor, lu_solve, solve
-
     A = mat - mu * Id
-    A_lu = lu_factor(A)
+    # A_lu = lu_factor(A)
 
     # The body function is another matrix multiply, followed by normalizing
     def body_fun(val: tuple[Array, Array, Array, Array, int]):
-        cur_vec, old_vec, mu_k, cur_eig, _prev_eig, _old_max_phase_diff, cur_iter = val
+        cur_vec, old_vec, cur_eig, _prev_eig, _old_max_phase_diff, cur_iter = val
+
         # Do next linear solve
-
-        # Rayleigh iteration:
-        # mu_k = rayleigh(mat, cur_vec, is_unit_vector=True)
-
-        # Each iteration we are solving (A - mu_k * I) @ next_vec = cur_vec
-        # next_vec = jax.scipy.linalg.solve(mat - mu_k * Id, cur_vec)
-        # Non-rayleigh iteration
-        # next_vec = jax.scipy.linalg.solve(mat - mu * Id, cur_vec)
-
-        # jax.debug.print("mu_k: {}", mu_k)
-        # A_k = mat - mu_k * Id
-        # next_vec = solve(A_k, cur_vec)
-
-        # Static A:
-        # next_vec = solve(A, cur_vec)
-        next_vec = lu_solve(A_lu, cur_vec)
+        # next_vec = lu_solve(A_lu, cur_vec)
+        next_vec = solve(A, cur_vec)
 
         # Normalize to a unit vector
         next_vec /= norm(next_vec)
 
-        # # Other way? slower?
-        # next_vec = jnp.linalg.inv(mat - mu_k * Id) @ cur_vec
-        # next_vec = jnp.linalg.inv(mat - mu * Id) @ cur_vec
-
-        # mu_k = mu_k + rayleigh(A, cur_vec, is_unit_vector=False)
-
         # Get current eigenvalue for the loop cond
         new_eig = rayleigh(mat, next_vec, is_unit_vector=True)
-        # mu_k1 = rayleigh(A_k, next_vec, is_unit_vector=True)
-        # mu_k2 = rayleigh(A, next_vec, is_unit_vector=True)
-        mu_k = new_eig
-        # jax.debug.print("mu_k: {}, mu_k1: {}, mu_k2: {}", mu_k, mu_k1, mu_k2)
-        # jax.debug.print("mu_k: {}, mu_k2: {}", mu_k, mu_k2)
 
         # Get the max element-wise phase-difference to check convergence
         phase_diff = jnp.angle(next_vec * old_vec.conj())
@@ -370,7 +312,6 @@ def eigh_closest_to_mu_rayleigh(
         return (
             next_vec,
             cur_vec,
-            mu_k,
             new_eig,
             cur_eig,
             max_diff,
@@ -378,8 +319,16 @@ def eigh_closest_to_mu_rayleigh(
         )
 
     def cond_fun(val: tuple[Array, Array, Array, Array, int]):
-        (new_vec, old_vec, _mu_k, new_eig, old_eig, max_phase_diff, cur_iter) = val
+        (new_vec, old_vec, new_eig, old_eig, max_phase_diff, cur_iter) = val
         eig_diff = jnp.abs(new_eig - old_eig)
+        # jax.debug.print(
+        #     "{} iterations. , {}, {}, {}, {}",
+        #     cur_iter,
+        #     new_eig,
+        #     old_eig,
+        #     max_phase_diff,
+        #     eig_diff,
+        # )
         # We will loop while the max phase change is greater than `tol`
         # return ((max_phase_diff > tol) | (eig_diff > tol)) & (cur_iter < max_iters)
         return (eig_diff > tol) & (cur_iter < max_iters)
@@ -387,13 +336,13 @@ def eigh_closest_to_mu_rayleigh(
     # Start with some unit vector. Make it zero phase:
     m, n = mat.shape
     v0 = (jnp.ones(m) + 1j * jnp.ones(m)).astype(mat.dtype)
-    v0 /= jnp.linalg.norm(v0)
+    v0 /= norm(v0)
     # Dummy vals for starting vec (0) and eigenvalues
-    eig0 = jnp.array(1.0, dtype=mat.dtype)
+    # Initialize the first eigenvalue guess to be `mu`
+    eig0 = jnp.array(mu, dtype=mat.dtype)
     (
         v_final,
         _v_prev,
-        mu_last,
         last_eigenvalue,
         _prev_eig,
         last_max_phase_diff,
@@ -401,13 +350,38 @@ def eigh_closest_to_mu_rayleigh(
     ) = lax.while_loop(
         cond_fun,
         body_fun,
-        (v0, -v0, mu, eig0, 0 * eig0, 1e3, 0),
+        (v0, -v0, eig0, eig0 - 1, 1e3, 0),
     )
-    # Now `last_eigenvalue` is the largest of (A - mu I)^{-1}
-    # We want the value of lambda for A that's closes to mu
-    # desired_lambda = mu + (1 / last_eigenvalue)
-    # The eigenvector is still the same though
-    desired_lambda = last_eigenvalue
 
-    # jax.debug.print("{} iterations. mu: {}, {}", _n_iters, mu_last, last_eigenvalue)
-    return jnp.real(desired_lambda), v_final, jnp.float32(last_max_phase_diff)
+    # jax.debug.print("{} iterations. , {}", _n_iters, last_eigenvalue)
+    return jnp.real(last_eigenvalue), v_final, jnp.float32(last_max_phase_diff)
+
+
+import jax.scipy
+
+
+@jit
+def scipy_eigh_stack(C_arrays: ArrayLike) -> tuple[Array, Array]:
+    def find_lowest(C):
+        lam, V = jax.scipy.linalg.eigh(C)
+        return lam[0], V[:, 0]
+
+    return vmap(vmap(find_lowest))(C_arrays)
+
+
+@jit
+def numpy_eigh_stack(C_arrays: ArrayLike) -> tuple[Array, Array]:
+    def find_lowest(C):
+        lam, V = jax.numpy.linalg.eigh(C)
+        return lam[0], V[:, 0]
+
+    return vmap(vmap(find_lowest))(C_arrays)
+
+
+@jit
+def scipy_eigh_largest_stack(C_arrays: ArrayLike) -> tuple[Array, Array]:
+    def find_eigenpair(C):
+        lam, V = jax.scipy.linalg.eigh(C)
+        return lam[-1], V[:, -1]
+
+    return vmap(vmap(find_eigenpair))(C_arrays)

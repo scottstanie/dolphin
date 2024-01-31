@@ -2,7 +2,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from dolphin.phase_link import (
+from dolphin.phase_link._eigen import (
     eigh_largest,
     eigh_largest_stack,
     eigh_smallest,
@@ -51,7 +51,7 @@ class TestEighSingle:
     def test_eigh_largest(self, coh_matrix, expected_largest):
         expected_evalue, expected_evec = expected_largest
         evalue, evec, residual = eigh_largest(coh_matrix)
-        assert evec.shape == (N, 1)
+        assert evec.shape == (N,)
 
         npt.assert_allclose(expected_evalue, evalue, atol=1e-5)
         assert np.max(get_eigvec_phase_difference(expected_evec, evec)) < 2e-4
@@ -90,7 +90,7 @@ class TestEighSingle:
     def test_eigh_smallest(self, coh_gamma_inv, expected_smallest):
         expected_evalue, expected_evec = expected_smallest
         evalue, evec, residual = eigh_smallest(coh_gamma_inv)
-        assert evec.shape == (N, 1)
+        assert evec.shape == (N,)
         # Note: the convergence is much worse for the smallest, where the eigenvalues
         # might looks something like
         # [0.07619964, 0.077591  , 0.07998301, ...

@@ -224,8 +224,8 @@ def mle_stack(
         Gamma_inv = jnp.linalg.inv(Gamma)
         eigvals, V, residuals = eigh_smallest_stack(Gamma_inv * C_arrays)
 
-    # The shape of V is (rows, cols, nslc, 1)
-    evd_estimate = V[:, :, :, 0]
+    # The shape of V is (rows, cols, nslc)
+    evd_estimate = V[:, :, :]
 
     # The phase estimate on the reference day will be size (rows, cols)
     ref = evd_estimate[:, :, reference_idx]

@@ -21,7 +21,7 @@ DEFAULT_STRIDES = Strides(1, 1)
 __all__ = ["estimate_stack_covariance", "coh_mat_single"]
 
 
-# @partial(jit, static_argnames=["half_window", "strides"])
+@partial(jit, static_argnames=["half_window", "strides"])
 def estimate_stack_covariance(
     slc_stack: ArrayLike,
     half_window: HalfWindow,

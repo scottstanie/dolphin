@@ -119,18 +119,24 @@ def invert_stack(
 
     """
     n_ifgs, n_rows, n_cols = dphi.shape
+    dphi_cols = dphi.reshape(n_ifgs, -1)
 
-    # vectorize the solve function to work on 2D and 3D arrays
-    # We are not vectorizing over the A matrix, only the dphi vector
-    # Solve 2d shapes: (nrows, n_ifgs) -> (nrows, n_sar_dates)
-    # invert_2d = vmap(invert_single, in_axes=(None, 1, 1), out_axes=1)
-    invert_2d = vmap(weighted_lstsq_single, in_axes=(None, 1, 1), out_axes=(1, 1))
-    # Solve 3d shapes: (nrows, ncols, n_ifgs) -> (nrows, ncols, n_sar_dates)
-    invert_3d = vmap(invert_2d, in_axes=(None, 2, 2), out_axes=(2, 2))
+    # # vectorize the solve function to work on 2D and 3D arrays
+    # # We are not vectorizing over the A matrix, only the dphi vector
+    # # Solve 2d shapes: (nrows, n_ifgs) -> (nrows, n_sar_dates)
+    # # invert_2d = vmap(invert_single, in_axes=(None, 1, 1), out_axes=1)
+    # invert_2d = vmap(weighted_lstsq_single, in_axes=(None, 1, 1), out_axes=(1, 1))
+    # # Solve 3d shapes: (nrows, ncols, n_ifgs) -> (nrows, ncols, n_sar_dates)
+    # invert_3d = vmap(invert_2d, in_axes=(None, 2, 2), out_axes=(2, 2))
+
+    invert_cols = vmap(weighted_lstsq_single, in_axes=(None, 1, 1), out_axes=(1, 1))
 
     if weights is None:
         weights = jnp.ones_like(dphi)
-    phase, residuals = invert_3d(A, dphi, weights)
+    # phase, residuals = invert_3d(A, dphi, weights)
+
+    weights_cols = weights.reshape(n_ifgs, -1)
+    phase, residuals = invert_cols(A, dphi_cols, weights_cols)
     # Add 0 for the reference date to the front
     phase = jnp.concatenate([jnp.zeros((1, n_rows, n_cols)), phase], axis=0)
     # Reshape the residuals to be 2D

@@ -421,12 +421,20 @@ def set_num_threads(num_threads: int):
 
     # Set the environment variables for the workers
     controller = ThreadpoolController()
-    controller.limit(limits=num_threads)
+    # controller.limit(limits=num_threads)
+    controller.limit(limits=1)
     # https://numba.readthedocs.io/en/stable/user/threading-layer.html#example-of-limiting-the-number-of-threads
-    num_cpus = get_cpu_count()
-    numba.set_num_threads(min(num_cpus, num_threads))
+    get_cpu_count()
+    # numba.set_num_threads(min(num_cpus, num_threads))
+    numba.set_num_threads(8)
     # jax setup is harder, for now
-    os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={num_threads}"
+    num_threads = 1
+    flags = ""
+    flags = f"--xla_force_host_platform_device_count={num_threads} "
+    flags += "--xla_cpu_multi_thread_eigen=false "
+    flags += f"intra_op_parallelism_threads={num_threads} "
+    flags += f"inter_op_parallelism_threads={num_threads} "
+    os.environ["XLA_FLAGS"] = flags
 
 
 def get_cpu_count():

@@ -244,6 +244,7 @@ def run(
             stitched_amp_dispersion_file=stitched_amp_dispersion_file,
             # TODO: do i care to configure block shape, or num threads from somewhere?
             # num_threads=cfg.worker_settings....?
+            block_shape=cfg.worker_settings.block_shape,
         )
     else:
         inverted_phase_paths = unwrapped_paths
@@ -343,7 +344,8 @@ def run_timeseries(
     conncomp_paths: Sequence[Path],
     cor_paths: Sequence[Path],
     stitched_amp_dispersion_file: Path,
-    num_threads: int = 5,
+    num_threads: int = 3,
+    block_shape: tuple[int, int] = (512, 512),
 ) -> list[Path]:
     """Invert the unwrapped interferograms, estimate timeseries and phase velocity."""
     output_path = ts_opts._directory
@@ -372,6 +374,7 @@ def run_timeseries(
             reference=reference,
             output_dir=output_path,
             num_threads=num_threads,
+            block_shape=block_shape,
         )
     else:
         logger.info(

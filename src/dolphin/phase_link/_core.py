@@ -55,6 +55,9 @@ class PhaseLinkOutput(NamedTuple):
     """Average coherence across dates for each SLC."""
 
 
+from threadpoolctl import threadpool_limits
+
+
 def run_phase_linking(
     slc_stack: np.ndarray,
     half_window: HalfWindow,
@@ -166,16 +169,17 @@ def run_phase_linking(
     slc_stack_masked = slc_stack.copy()
     slc_stack_masked[:, ignore_mask] = np.nan
 
-    cpl_out = run_cpl(
-        slc_stack=slc_stack_masked,
-        half_window=half_window,
-        strides=strides,
-        use_evd=use_evd,
-        beta=beta,
-        reference_idx=reference_idx,
-        neighbor_arrays=neighbor_arrays,
-        calc_average_coh=calc_average_coh,
-    )
+    with threadpool_limits(limits=1):
+        cpl_out = run_cpl(
+            slc_stack=slc_stack_masked,
+            half_window=half_window,
+            strides=strides,
+            use_evd=use_evd,
+            beta=beta,
+            reference_idx=reference_idx,
+            neighbor_arrays=neighbor_arrays,
+            calc_average_coh=calc_average_coh,
+        )
 
     if use_slc_amp:
         # use the amplitude from the original SLCs
@@ -284,6 +288,7 @@ def run_cpl(
         shape = (nslc, out_rows, out_cols)
 
     """
+    # print("get cov...")
     C_arrays = covariance.estimate_stack_covariance(
         slc_stack,
         half_window,
@@ -291,19 +296,22 @@ def run_cpl(
         neighbor_arrays=neighbor_arrays,
     )
 
+    # np.save("C_arrays.npy", C_arrays)
+    # print("process cov eigh...")
     cpx_phase, eigenvalues, estimator = process_coherence_matrices(
         C_arrays,
         use_evd=use_evd,
         beta=beta,
         reference_idx=reference_idx,
     )
+    # print("rest:")
     # Get the temporal coherence
     temp_coh = metrics.estimate_temp_coh(cpx_phase, C_arrays)
 
     if calc_average_coh:
         # If requested, average the Cov matrix at each row for reference selection
         avg_coh_per_date = jnp.abs(C_arrays).mean(axis=3)
-        avg_coh = np.argmax(avg_coh_per_date, axis=2)
+        avg_coh = jnp.argmax(avg_coh_per_date, axis=2)
     else:
         avg_coh = None
 

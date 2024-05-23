@@ -54,6 +54,9 @@ class PhaseLinkOutput(NamedTuple):
     avg_coh: np.ndarray | None = None
     """Average coherence across dates for each SLC."""
 
+    cor_images: np.ndarray | None = None
+    """A stack of correlation images to write out."""
+
 
 def run_phase_linking(
     slc_stack: np.ndarray,
@@ -68,6 +71,7 @@ def run_phase_linking(
     avg_mag: Optional[np.ndarray] = None,
     use_slc_amp: bool = True,
     calc_average_coh: bool = False,
+    save_cor_images: bool = True,
 ) -> PhaseLinkOutput:
     """Estimate the linked phase for a stack of SLCs.
 
@@ -129,7 +133,7 @@ def run_phase_linking(
         (only If `calc_average_coh` is True) the average coherence for each SLC date
 
     """
-    _, rows, cols = slc_stack.shape
+    n_slc, rows, cols = slc_stack.shape
     # Common pre-processing for both CPU and GPU versions:
 
     # Mask nodata pixels if given
@@ -175,6 +179,7 @@ def run_phase_linking(
         reference_idx=reference_idx,
         neighbor_arrays=neighbor_arrays,
         calc_average_coh=calc_average_coh,
+        save_cor_images=save_cor_images,
     )
 
     if use_slc_amp:
@@ -216,6 +221,7 @@ def run_phase_linking(
         np.array(cpl_out.eigenvalues),
         np.array(cpl_out.estimator),
         cpl_out.avg_coh,
+        np.array(cpl_out.cor_images),
     )
 
 
@@ -228,6 +234,7 @@ def run_cpl(
     reference_idx: int = 0,
     neighbor_arrays: Optional[np.ndarray] = None,
     calc_average_coh: bool = False,
+    save_cor_images: bool = True,
 ) -> PhaseLinkOutput:
     """Run the Combined Phase Linking (CPL) algorithm.
 
@@ -307,10 +314,27 @@ def run_cpl(
     else:
         avg_coh = None
 
+    if save_cor_images:
+        n_slc = len(slc_stack)
+        row_idxs, col_idxs = np.triu_indices(n_slc, k=1)
+        # In [13]: C.shape
+        # Out[13]: (3, 4, 5, 5)
+        # In [12]: C[:, :, row_idxs, col_idxs].shape
+        # Out[12]: (3, 4, 15)
+        cor_images = jnp.abs(C_arrays[:, :, row_idxs, col_idxs]).astype("float16")
+        cor_images = jnp.moveaxis(cor_images, -1, 0)
+    else:
+        cor_images = None
+
     # Reshape the (rows, cols, nslcs) output to be same as input stack
     cpx_phase_reshaped = jnp.moveaxis(cpx_phase, -1, 0)
     return PhaseLinkOutput(
-        cpx_phase_reshaped, temp_coh, eigenvalues, estimator, avg_coh
+        cpx_phase_reshaped,
+        temp_coh,
+        eigenvalues,
+        estimator,
+        avg_coh,
+        cor_images=cor_images,
     )
 
 

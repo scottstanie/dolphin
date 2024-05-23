@@ -135,6 +135,23 @@ def run_wrapped_phase_single(
             nodata=0,
         )
 
+    n_slc = vrt.shape[0]
+    opts2 = ("COMPRESS=LERC_ZSTD", "MAX_Z_ERROR=0.005", "TILED=yes")
+    cor_output_files: list[OutputFile] = []
+    for i, j in zip(*np.triu_indices(n_slc, k=1)):
+        op = OutputFile(output_folder / f"cor_{i:02d}_{j:02d}.tif", np.float32, strides)
+        cor_output_files.append(op)
+        io.write_arr(
+            arr=None,
+            like_filename=vrt.outfile,
+            output_name=op.filename,
+            dtype=op.dtype,
+            strides=op.strides,
+            nbands=1,
+            nodata=0,
+            options=opts2,
+        )
+
     # Iterate over the output grid
     block_manager = StridedBlockManager(
         arr_shape=(nrows, ncols),
@@ -270,6 +287,19 @@ def run_wrapped_phase_single(
                 out_rows.start,
                 out_cols.start,
             )
+
+        if len(pl_output.cor_images) == len(cor_output_files):
+            for img, out in zip(
+                pl_output.cor_images[first_real_slc_idx:, out_trim_rows, out_trim_cols],
+                cor_output_files,
+            ):
+                writer.queue_write(img, out.filename, out_rows.start, out_cols.start)
+        else:
+            logger.info("NOT ENOUGH")
+            import ipdb
+
+            ipdb.set_trace()
+            raise ValueError()
 
     loader.notify_finished()
     # Block until all the writers for this ministack have finished

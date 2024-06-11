@@ -6,15 +6,17 @@ from io import StringIO
 from itertools import repeat
 from typing import Optional, TextIO, Union
 
-from pydantic import BaseModel
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
 from dolphin._types import Filename
 
 
-class YamlModel(BaseModel):
+class YamlModel(BaseSettings):
     """Pydantic model that can be exported to yaml."""
+
+    model_config = SettingsConfigDict(cli_parse_args=True)
 
     def to_yaml(
         self,

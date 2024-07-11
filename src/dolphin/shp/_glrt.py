@@ -4,7 +4,6 @@ import csv
 from functools import lru_cache
 from math import log
 from pathlib import Path
-from typing import Optional
 
 import numba
 import numpy as np
@@ -17,13 +16,15 @@ from ._common import remove_unconnected
 
 _get_slices = numba.njit(_get_slices)
 
+DEFAULT_STRIDES = Strides(1, 1)
+
 
 def estimate_neighbors(
     mean: ArrayLike,
     var: ArrayLike,
     halfwin_rowcol: tuple[int, int],
     nslc: int,
-    strides: Optional[dict] = None,
+    strides: DEFAULT_STRIDES,
     alpha: float = 0.05,
     prune_disconnected: bool = False,
 ):
@@ -44,9 +45,6 @@ def estimate_neighbors(
         Number of images in the stack used to compute `mean` and `var`.
         Used to compute the degrees of freedom for the t- and F-tests to
         determine the critical values.
-    strides: dict, optional
-        The (x, y) strides (in pixels) to use for the sliding window.
-        By default {"x": 1, "y": 1}
     alpha : float, default=0.05
         Significance level at which to reject the null hypothesis.
         Rejecting means declaring a neighbor is not a SHP.
@@ -80,8 +78,7 @@ def estimate_neighbors(
 
     threshold = get_cutoff(alpha=alpha, N=nslc)
 
-    strides_rowcol = (strides["y"], strides["x"])
-    out_rows, out_cols = compute_out_shape((rows, cols), Strides(*strides_rowcol))
+    out_rows, out_cols = compute_out_shape((rows, cols), strides=strides)
     is_shp = np.zeros(
         (out_rows, out_cols, 2 * half_row + 1, 2 * half_col + 1), dtype=np.bool_
     )
@@ -89,7 +86,7 @@ def estimate_neighbors(
         mean,
         var,
         halfwin_rowcol,
-        strides_rowcol,
+        tuple(strides),
         threshold,
         prune_disconnected,
         is_shp,

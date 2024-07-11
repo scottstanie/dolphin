@@ -6,6 +6,7 @@ from typing import Optional
 import numpy as np
 from numpy.typing import ArrayLike
 
+from dolphin._types import Strides
 from dolphin.workflows import ShpMethod
 
 from . import _glrt, _ks
@@ -14,12 +15,14 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["estimate_neighbors"]
 
+DEFAULT_STRIDES = Strides(1, 1)
+
 
 def estimate_neighbors(
     *,
     halfwin_rowcol: tuple[int, int],
     alpha: float,
-    strides: Optional[dict[str, int]] = None,
+    strides: Strides = DEFAULT_STRIDES,
     mean: Optional[ArrayLike] = None,
     var: Optional[ArrayLike] = None,
     nslc: Optional[int] = None,
@@ -73,8 +76,6 @@ def estimate_neighbors(
     """
     import numba
 
-    if strides is None:
-        strides = {"x": 1, "y": 1}
     logger.debug(f"NUMBA THREADS: {numba.get_num_threads()}")
 
     if method == ShpMethod.RECT:

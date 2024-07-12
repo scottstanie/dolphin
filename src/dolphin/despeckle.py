@@ -24,6 +24,8 @@ def despeckle(
     half_window: HalfWindow,
     strides: Strides = DEFAULT_STRIDES,
     shp_alpha: float = 0.01,
+    amp_mean: ArrayLike | None = None,
+    amp_variance: ArrayLike | None = None,
 ) -> Array:
     """Estimate the linked phase at all pixels of `slc_stack`.
 
@@ -39,6 +41,14 @@ def despeckle(
         By default (1, 1)
     shp_alpha : float, optional
         The significance level for the SHP test, by default 0.01.
+    amp_mean : ArrayLike, optional
+        A pre-computed SLC amplitude mean, with shape (n_rows, n_cols).
+        If None, computes the mean of `amp_stack`
+        Used to find pixel neighborhoods.
+    amp_variance : ArrayLike, optional
+        A pre-computed SLC amplitude variance, with shape (n_rows, n_cols).
+        If None, computes the variance of `amp_stack`
+        Used to find pixel neighborhoods.
 
 
     Returns
@@ -51,8 +61,10 @@ def despeckle(
     """
     yhalf, xhalf = half_window
 
-    amp_mean = np.mean(amp_stack, axis=0)
-    amp_variance = np.var(amp_stack, axis=0)
+    if amp_mean is None:
+        amp_mean = np.mean(amp_stack, axis=0)
+    if amp_variance is None:
+        amp_variance = np.var(amp_stack, axis=0)
     # Compute the neighbor_arrays for this block
     neighbor_arrays = shp.estimate_neighbors(
         halfwin_rowcol=(yhalf, xhalf),
@@ -63,13 +75,15 @@ def despeckle(
         nslc=amp_stack.shape[0],
         method=shp.ShpMethod.GLRT,
     )
-    despeckled_stack = compute_block(amp_stack, half_window, strides, neighbor_arrays)
+    despeckled_stack = average_neighbors(
+        amp_stack, half_window, strides, neighbor_arrays
+    )
     shp_counts = np.sum(neighbor_arrays, axis=(2, 3))
     return despeckled_stack, shp_counts
 
 
 @partial(jit, static_argnames=["half_window", "strides"])
-def compute_block(
+def average_neighbors(
     amp_stack: ArrayLike,
     half_window: HalfWindow,
     strides: Strides = DEFAULT_STRIDES,
@@ -105,7 +119,7 @@ def compute_block(
         cur_neighbors = neighbor_arrays[out_r, out_c, :, :]
         neighbor_mask = cur_neighbors.ravel()
 
-        return average_single(slc_samples, neighbor_mask=neighbor_mask)
+        return average_samples(slc_samples, neighbor_mask=neighbor_mask)
 
     # Now make a 2D grid of indices to access all output pixels
     out_r_indices, out_c_indices = jnp.meshgrid(
@@ -117,6 +131,28 @@ def compute_block(
     # Then in 3d
     _process_3d = vmap(_process_2d, out_axes=1)
     return _process_3d(out_r_indices, out_c_indices)
+
+
+@jit
+def average_samples(
+    slc_samples: ArrayLike, neighbor_mask: Optional[ArrayLike] = None
+) -> Array:
+    """Average the (n_samps, nslc) SLC amplitude samples for a neighborhood."""
+    nslc, nsamps = slc_samples.shape
+
+    if neighbor_mask is None:
+        neighbor_mask = jnp.ones(nsamps, dtype=jnp.bool_)
+    valid_samples_mask = ~jnp.isnan(slc_samples)
+    combined_mask = valid_samples_mask & neighbor_mask[None, :]
+
+    # Mask the slc samples
+    # note that it's not possible to change the size based on the mask
+    # https://jax.readthedocs.io/en/latest/notebooks/Common_Gotchas_in_JAX.html#dynamic-shapes
+    masked_slc = jnp.where(combined_mask, slc_samples, 0)
+    # Average the selected pixels:
+    # NOTE: we average power (intensity), not amplitude
+    # This differs from the `fringe` implementation
+    return jnp.sqrt(jnp.mean(masked_slc**2, axis=1))
 
 
 # Note: this is the transposed version from the one in phase_link/covariance.py,
@@ -148,23 +184,3 @@ def _get_stack_window(
     csize = 2 * half_col + 1
     slice_sizes = (dsize, rsize, csize)
     return lax.dynamic_slice(stack, start_indices, slice_sizes)
-
-
-@jit
-def average_single(
-    slc_samples: ArrayLike, neighbor_mask: Optional[ArrayLike] = None
-) -> Array:
-    """Given (n_samps, nslc) SLC samples, get the average for neighboring pixels."""
-    nslc, nsamps = slc_samples.shape
-
-    if neighbor_mask is None:
-        neighbor_mask = jnp.ones(nsamps, dtype=jnp.bool_)
-    valid_samples_mask = ~jnp.isnan(slc_samples)
-    combined_mask = valid_samples_mask & neighbor_mask[None, :]
-
-    # Mask the slc samples
-    # note that it's not possible to change the size based on the mask
-    # https://jax.readthedocs.io/en/latest/notebooks/Common_Gotchas_in_JAX.html#dynamic-shapes
-    masked_slc = jnp.where(combined_mask, slc_samples, 0)
-    # Average the selected pixels:
-    return jnp.mean(masked_slc, axis=1)

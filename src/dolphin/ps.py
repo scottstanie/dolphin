@@ -280,6 +280,8 @@ def multilook_ps_files(
     strides: dict[str, int],
     ps_mask_file: Filename,
     amp_dispersion_file: Filename,
+    ps_out_path: Filename | None = None,
+    amp_disp_out_path: Filename | None = None,
 ) -> tuple[Path, Path]:
     """Create a multilooked version of the full-res PS mask/amplitude dispersion.
 
@@ -291,6 +293,12 @@ def multilook_ps_files(
         Name of input full-res uint8 PS mask file
     amp_dispersion_file : Filename
         Name of input full-res float32 amplitude dispersion file
+    ps_out_path: Filename, optional
+        Location for output looked PS file.
+        If not provided, adds "_looked" before `ps_mask_file`'s suffix.
+    amp_disp_out_path : Filename, optional
+        Location for output looked amplitude dispersion file.
+        If not provided, adds "_looked" before `amp_dispersion_file`'s suffix.
 
     Returns
     -------

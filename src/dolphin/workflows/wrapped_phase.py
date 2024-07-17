@@ -78,6 +78,8 @@ def run(
     ps_output.parent.mkdir(parents=True, exist_ok=True)
     if ps_output.exists():
         logger.info(f"Skipping making existing PS file {ps_output}")
+    elif not cfg.ps_options.run_ps:
+        logger.info("Skipping PS selection: DS only.")
     else:
         logger.info(f"Creating persistent scatterer file {ps_output}")
         try:
@@ -100,13 +102,19 @@ def run(
             **kwargs,
         )
 
-    # Save a looked version of the PS mask too
-    strides = cfg.output_options.strides
-    ps_looked_file, amp_disp_looked_file = ps.multilook_ps_files(
-        strides=strides,
-        ps_mask_file=cfg.ps_options._output_file,
-        amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
-    )
+    if cfg.ps_options.run_ps:
+        # Save a looked version of the PS mask too
+        strides = cfg.output_options.strides
+        ps_looked_file, amp_disp_looked_file = ps.multilook_ps_files(
+            strides=strides,
+            ps_mask_file=cfg.ps_options._output_file,
+            amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
+        )
+    else:
+        ps_looked_file = cfg.ps_options._output_file
+        amp_disp_looked_file = cfg.ps_options._amp_dispersion_file
+        ps_looked_file.write_text("")
+        amp_disp_looked_file.write_text("")
 
     # #########################
     # phase linking/EVD step

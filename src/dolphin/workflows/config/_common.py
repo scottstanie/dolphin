@@ -49,6 +49,13 @@ class PsOptions(BaseModel, extra="forbid"):
         description="Amplitude dispersion threshold to consider a pixel a PS.",
         gt=0.0,
     )
+    run_ps: bool = Field(
+        True,
+        description=(
+            "Whether to run PS selection step. If False, only DS from phase linking are"
+            " used."
+        ),
+    )
 
 
 class HalfWindow(BaseModel, extra="forbid"):

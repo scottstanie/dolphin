@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -56,6 +57,7 @@ def run(
         list of Paths to connected component files created.
 
     """
+    t0 = time.perf_counter()
     if len(ifg_file_list) != len(cor_file_list):
         msg = f"{len(ifg_file_list) = } != {len(cor_file_list) = }"
         raise ValueError(msg)
@@ -95,9 +97,13 @@ def run(
 
     # Dump the used options for JSON parsing
     logger.info(
-        "Unwrapping complete",
-        extra={"unwrap_options": unwrap_options.model_dump(mode="json")},
+        "unwrapping complete",
+        extra={
+            "elapsed": time.perf_counter() - t0,
+            "unwrap_options": unwrap_options.model_dump(mode="json"),
+        },
     )
+
     return (unwrapped_paths, conncomp_paths)
 
 

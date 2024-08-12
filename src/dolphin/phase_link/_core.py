@@ -406,8 +406,8 @@ def process_coherence_matrices(
 
     Returns
     -------
-    eig_vecs : ndarray[float32], shape = (rows, cols, nslc)
-        The phase resulting from the optimization at each output pixel.
+    evd_estimate : ndarray[complex64], shape = (rows, cols, nslc)
+        The complex phase resulting from the optimization at each output pixel.
         Shape is same as input slcs unless Strides > (1, 1)
     eig_vals : ndarray[float], shape = (rows, cols)
         The smallest (largest) eigenvalue as solved by EMI (EVD).
@@ -418,6 +418,7 @@ def process_coherence_matrices(
     """
     rows, cols, n, _ = C_arrays.shape
 
+    coh_posterior = C_arrays
     if use_evd:
         # EVD
         evd_eig_vals, evd_eig_vecs = eigh_largest_stack(C_arrays)
@@ -448,14 +449,11 @@ def process_coherence_matrices(
         # We're looking for the lambda nearest to 1. So shift by 0.99
         # Also, use the evd vectors as iteration starting point:
         mu = 0.99
-        emi_eig_vals, emi_eig_vecs = eigh_smallest_stack(Gamma_inv * C_arrays, mu)
+        emi_eig_vals, zeta = eigh_smallest_stack(Gamma_inv * C_arrays, mu)
         # From the EMI paper, normalize the eigenvectors to have norm sqrt(n)
-        emi_eig_vecs = (
-            jnp.sqrt(n)
-            * emi_eig_vecs
-            / jnp.linalg.norm(emi_eig_vecs, axis=-1, keepdims=True)
-        )
+        xi = jnp.sqrt(n) / jnp.linalg.norm(zeta, axis=-1, keepdims=True) * zeta
         # is the output is the inverse of the eigenvectors? or inverse conj?
+        emi_eig_vecs = xi
 
         # Use https://jax.readthedocs.io/en/latest/_autosummary/jax.lax.select.html
         # Note that `if` would fail the jit tracing
@@ -481,6 +479,20 @@ def process_coherence_matrices(
         evd_used = jnp.zeros(emi_eig_vals.shape, dtype=jnp.int8)
         emi_used = jnp.ones(emi_eig_vals.shape, dtype=jnp.int8)
         estimator = lax.select(inv_has_nans, evd_used, emi_used)
+        emi_posterior = (
+            emi_eig_vals[:, :, None, None]
+            * C_arrays
+            * jnp.einsum("rci,rcj->rcij", xi, xi.conj())
+        )
+
+        coh_posterior = emi_posterior
+        # good_rows, good_cols = jnp.where(~inv_has_nans)
+        # coh_posterior = coh_posterior.at[good_rows, good_cols, :, :] = emi_posterior[
+        #     good_rows, good_cols, :, :
+        # ]
+        # coh_posterior = jnp.abs(
+        #     lax.select(inv_has_nans[:, :, None, None], emi_posterior, C_arrays)
+        # )
 
     # Now the shape of eig_vecs is (rows, cols, nslc)
     # at pixel (r, c), eig_vecs[r, c] is the largest (smallest) eigenvector if
@@ -490,7 +502,7 @@ def process_coherence_matrices(
     # Make sure each still has 3 dims, then reference all phases to `ref`
     evd_estimate = eig_vecs * jnp.exp(-1j * jnp.angle(ref[:, :, None]))
 
-    return evd_estimate, eig_vals, estimator.astype("uint8")
+    return evd_estimate, eig_vals, estimator.astype("uint8"), jnp.abs(coh_posterior)
 
 
 def decimate(arr: ArrayLike, strides: Strides) -> Array:

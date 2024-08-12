@@ -41,14 +41,19 @@ class BackgroundBlockWriter(BackgroundWriter):
     """Class to write data to multiple files in the background using `gdal` bindings."""
 
     def __init__(self, *, max_queue: int = 0, debug: bool = False, **kwargs):
-        if debug is False:
-            super().__init__(nq=max_queue, name="Writer", **kwargs)
-        else:
-            # Don't start a background thread. Just synchronously write data
+        super().__init__(nq=max_queue, name="Writer")
+        if debug:
+            #  background thread. Just synchronously write data
+            self.notify_finished()
             self.queue_write = self.write  # type: ignore[assignment]
 
     def write(
-        self, data: ArrayLike, filename: Filename, row_start: int, col_start: int
+        self,
+        data: ArrayLike,
+        filename: Filename,
+        row_start: int,
+        col_start: int,
+        band: int | None = None,
     ):
         """Write out an ndarray to a subset of the pre-made `filename`.
 
@@ -62,6 +67,9 @@ class BackgroundBlockWriter(BackgroundWriter):
             Row index to start writing at.
         col_start : int
             Column index to start writing at.
+        band : int, optional
+            Band index in the file to write. Defaults to None, which uses first band,
+            or whole raster for 3D data.
 
         Raises
         ------
@@ -71,7 +79,7 @@ class BackgroundBlockWriter(BackgroundWriter):
         """
         from dolphin.io import write_block
 
-        write_block(data, filename, row_start, col_start)
+        write_block(data, filename, row_start, col_start, band=band)
 
 
 @runtime_checkable
@@ -326,11 +334,12 @@ class BackgroundRasterWriter(BackgroundWriter, DatasetWriter):
     def __init__(
         self, filename: Filename, *, max_queue: int = 0, debug: bool = False, **kwargs
     ):
-        if debug is False:
-            super().__init__(nq=max_queue, name="Writer")
-        else:
-            # Don't start a background thread. Just synchronously write data
+        super().__init__(nq=max_queue, name="Writer")
+        if debug:
+            #  background thread. Just synchronously write data
+            self.notify_finished()
             self.queue_write = self.write  # type: ignore[assignment]
+
         if Path(filename).exists():
             self._raster = RasterWriter(filename)
         else:
@@ -397,10 +406,10 @@ class BackgroundStackWriter(BackgroundWriter, DatasetStackWriter):
     ):
         from dolphin.io import write_arr
 
-        if debug is False:
-            super().__init__(nq=max_queue, name="GdalStackWriter")
-        else:
-            # Don't start a background thread. Just synchronously write data
+        super().__init__(nq=max_queue, name="GdalStackWriter")
+        if debug:
+            # Stop background thread. Just synchronously write data
+            self.notify_finished()
             self.queue_write = self.write  # type: ignore[assignment]
 
         for fn in file_list:
@@ -417,7 +426,9 @@ class BackgroundStackWriter(BackgroundWriter, DatasetStackWriter):
             self.shape = (len(self.file_list), *src.shape)
             self.dtype = src.dtypes[0]
 
-    def write(self, data: ArrayLike, row_start: int, col_start: int):
+    def write(
+        self, data: ArrayLike, row_start: int, col_start: int, band: int | None = None
+    ):
         """Write out an ndarray to a subset of the pre-made `filename`.
 
         Parameters
@@ -430,6 +441,9 @@ class BackgroundStackWriter(BackgroundWriter, DatasetStackWriter):
             Row index to start writing at.
         col_start : int
             Column index to start writing at.
+        band : int, optional
+            Band index in the file to write. Defaults to None, which uses first band,
+            or whole raster for 3D data.
 
         Raises
         ------
@@ -444,7 +458,7 @@ class BackgroundStackWriter(BackgroundWriter, DatasetStackWriter):
         if data.shape[0] != len(self.file_list):
             raise ValueError(f"{data.shape = }, but {len(self.file_list) = }")
         for fn, layer in zip(self.file_list, data):
-            write_block(layer, fn, row_start, col_start)
+            write_block(layer, fn, row_start, col_start, band=band)
 
     def __setitem__(self, key, value):
         # Unpack the slices

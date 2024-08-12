@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from math import exp, sqrt
 from typing import Optional
 
@@ -8,13 +9,12 @@ import numpy as np
 from numba import cuda
 from numpy.typing import ArrayLike
 
-from dolphin._log import get_log
 from dolphin._types import Strides
 from dolphin.utils import _get_slices, compute_out_shape
 
 from ._common import remove_unconnected
 
-logger = get_log(__name__)
+logger = logging.getLogger(__name__)
 
 
 _get_slices = numba.njit(_get_slices)
@@ -156,7 +156,7 @@ def _set_neighbors(amp_block, halfwin_rowcol, ecdf_dist_cutoff, neighbors):
     for i in range(rows):
         for j in range(cols):
             if i == r_c and j == c_c:
-                neighbors[i, j] = True
+                neighbors[i, j] = False
                 continue
             x2 = amp_block[:, i, j]
 

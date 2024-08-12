@@ -12,7 +12,6 @@ class ShpMethod(str, Enum):
 
     GLRT = "glrt"
     KS = "ks"
-    KLD = "kld"
     RECT = "rect"
     # Alias for no SHP search
     NONE = "rect"
@@ -25,6 +24,7 @@ class UnwrapMethod(str, Enum):
     ICU = "icu"
     PHASS = "phass"
     SPURT = "spurt"
+    WHIRLWIND = "whirlwind"
 
 
 class CallFunc(str, Enum):

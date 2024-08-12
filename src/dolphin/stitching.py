@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import subprocess
 import tempfile
@@ -14,14 +15,14 @@ import numpy as np
 from numpy.typing import DTypeLike
 from opera_utils import group_by_date
 from osgeo import gdal, osr
-from pyproj import Transformer
+from rasterio.warp import transform_bounds
+from tqdm.contrib.concurrent import thread_map
 
 from dolphin import io, utils
-from dolphin._log import get_log
 from dolphin._types import Bbox, Filename
 from dolphin.io import DEFAULT_DATETIME_FORMAT
 
-logger = get_log(__name__)
+logger = logging.getLogger(__name__)
 
 
 def merge_by_date(
@@ -35,6 +36,7 @@ def merge_by_date(
     out_bounds: Optional[Bbox] = None,
     out_bounds_epsg: Optional[int] = None,
     options: Optional[Sequence[str]] = io.DEFAULT_TIFF_OPTIONS,
+    num_workers: int = 1,
     overwrite: bool = False,
 ) -> dict[tuple[datetime, ...], Path]:
     """Group images from the same datetime and merge into one image per datetime.
@@ -65,6 +67,9 @@ def merge_by_date(
     options : Optional[Sequence[str]]
         Driver-specific creation options passed to GDAL.
         Default is [dolphin.io.DEFAULT_TIFF_OPTIONS][].
+    num_workers : int
+        Number of dates to stitch in separate threads in parallel.
+        Default is 1.
     overwrite : bool
         Overwrite existing files. Default is False.
 
@@ -95,7 +100,10 @@ def merge_by_date(
             msg = f"Expected 1 or 2 dates: {dates}."
             raise ValueError(msg)
         outfile = Path(output_dir) / (date_str + output_suffix)
+        stitched_acq_times[dates] = outfile
 
+    def process_date(args):
+        cur_images, outfile = args
         merge_images(
             cur_images,
             outfile=outfile,
@@ -108,7 +116,13 @@ def merge_by_date(
             options=options,
         )
 
-        stitched_acq_times[dates] = outfile
+    # loop over the merging in parallel
+    thread_map(
+        process_date,
+        list(zip(grouped_images.values(), stitched_acq_times.values())),
+        max_workers=num_workers,
+        desc="Merging images by date",
+    )
 
     return stitched_acq_times
 
@@ -232,7 +246,16 @@ def merge_images(
     optfile.write_text("\n".join(map(str, warped_file_list)))
     suffix = Path(outfile).suffix
     merge_output = (tmp_path / "merged").with_suffix(suffix)
-    args = ["gdal_merge.py", "-o", merge_output, "--optfile", optfile, "-of", driver]
+    args = [
+        "gdal_merge.py",
+        "-quiet",
+        "-o",
+        merge_output,
+        "--optfile",
+        optfile,
+        "-of",
+        driver,
+    ]
 
     if out_nodata is not None:
         args.extend(["-a_nodata", str(out_nodata)])
@@ -249,7 +272,7 @@ def merge_images(
             args.extend(["-co", option])
 
     arg_list = [str(a) for a in args]
-    logger.info(f"Running {' '.join(arg_list)}")
+    logger.debug(f"Running {' '.join(arg_list)}")
     subprocess.check_call(arg_list)
 
     # Now clip to the provided bounding box
@@ -257,8 +280,12 @@ def merge_images(
         destName=fspath(outfile),
         srcDS=fspath(merge_output),
         projWin=proj_win,
-        resampleAlg=resample_alg,
+        # TODO: https://github.com/OSGeo/gdal/issues/10536
+        # Figure out if we really want to resample here, or just
+        # do a nearest neighbor (which is default)
+        resampleAlg="bilinear",
         format=driver,
+        creationOptions=options,
     )
 
     temp_dir.cleanup()
@@ -481,7 +508,7 @@ def get_combined_bounds_nodata(
     if out_bounds is not None:
         if out_bounds_epsg is not None:
             dst_epsg = io.get_raster_crs(filenames[0]).to_epsg()
-            bounds = _reproject_bounds(out_bounds, out_bounds_epsg, dst_epsg)
+            bounds = Bbox(*transform_bounds(out_bounds_epsg, dst_epsg, *out_bounds))
         else:
             bounds = out_bounds
     else:
@@ -504,42 +531,6 @@ def _align_bounds(bounds: Bbox, res: tuple[float, float]) -> Bbox:
     bottom = math.floor(bottom / res[1]) * res[1]
     top = math.ceil(top / res[1]) * res[1]
     return Bbox(left, bottom, right, top)
-
-
-def _reproject_bounds(bounds: Bbox, src_epsg: int, dst_epsg: int) -> Bbox:
-    t = Transformer.from_crs(src_epsg, dst_epsg, always_xy=True)
-    left, bottom, right, top = bounds
-    b = (*t.transform(left, bottom), *t.transform(right, top))
-    return Bbox(*b)
-
-
-def get_transformed_bounds(filename: Filename, epsg_code: Optional[int] = None):
-    """Get the bounds of a raster, possibly in a different CRS.
-
-    Parameters
-    ----------
-    filename : str
-        Path to the raster file.
-    epsg_code : Optional[int]
-        EPSG code of the CRS to transform to.
-        If not provided, or the raster is already in the desired CRS,
-        the bounds will not be transformed.
-
-    Returns
-    -------
-    tuple
-        The bounds of the raster as (left, bottom, right, top)
-
-    """
-    bounds = io.get_raster_bounds(filename)
-    if epsg_code is None:
-        return bounds
-    from_epsg = io.get_raster_crs(filename=filename).to_epsg()
-    assert from_epsg is not None
-    if from_epsg == epsg_code:
-        return bounds
-
-    return _reproject_bounds(bounds, from_epsg, epsg_code)
 
 
 def _copy_set_nodata(

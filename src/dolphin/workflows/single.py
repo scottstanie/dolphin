@@ -103,7 +103,7 @@ def run_wrapped_phase_single(
 
     logger.info(f"Total stack size (in pixels): {vrt.shape}")
     # Set up the output folder with empty files to write into
-    phase_linked_slc_files = setup_output_folder(
+    phase_linked_slc_files, cor_output_files = setup_output_folder(
         ministack=ministack,
         driver="GTiff",
         strides=strides,
@@ -139,22 +139,20 @@ def run_wrapped_phase_single(
             nodata=0,
         )
 
-    n_slc = vrt.shape[0]
-    opts2 = ("COMPRESS=LERC_ZSTD", "MAX_Z_ERROR=0.005", "TILED=yes")
-    cor_output_files: list[OutputFile] = []
-    for i, j in zip(*np.triu_indices(n_slc, k=1)):
-        op = OutputFile(output_folder / f"cor_{i:02d}_{j:02d}.tif", np.float32, strides)
-        cor_output_files.append(op)
-        io.write_arr(
-            arr=None,
-            like_filename=vrt.outfile,
-            output_name=op.filename,
-            dtype=op.dtype,
-            strides=op.strides,
-            nbands=1,
-            nodata=0,
-            options=opts2,
-        )
+    vrt.shape[0]
+    # cor_output_files: list[OutputFile] = []
+    # for i, j in zip(*np.triu_indices(n_slc, k=1)):
+    #     op = OutputFile(output_folder / f"cor_{i:02d}_{j:02d}.tif", np.float16, strides)
+    #     cor_output_files.append(op)
+    #     io.write_arr(
+    #         arr=None,
+    #         like_filename=vrt.outfile,
+    #         output_name=op.filename,
+    #         dtype=op.dtype,
+    #         strides=op.strides,
+    #         nbands=1,
+    #         nodata=0,
+    #     )
 
     # Iterate over the output grid
     block_manager = StridedBlockManager(
@@ -251,6 +249,11 @@ def run_wrapped_phase_single(
             phase_linked_slc_files,
         ):
             writer.queue_write(img, f, out_rows.start, out_cols.start)
+        for img, f in zip(
+            pl_output.cor_images[first_real_slc_idx:, out_trim_rows, out_trim_cols],
+            cor_output_files,
+        ):
+            writer.queue_write(img, f, out_rows.start, out_cols.start)
 
         # Compress the ministack using only the non-compressed SLCs
         # Get the mean to set as pixel magnitudes
@@ -301,15 +304,6 @@ def run_wrapped_phase_single(
                 out_cols.start,
             )
 
-        if pl_output.cor_images is not None and len(pl_output.cor_images) == len(
-            cor_output_files
-        ):
-            for img, out in zip(
-                pl_output.cor_images[first_real_slc_idx:, out_trim_rows, out_trim_cols],
-                cor_output_files,
-            ):
-                writer.queue_write(img, out.filename, out_rows.start, out_cols.start)
-
     loader.notify_finished()
     # Block until all the writers for this ministack have finished
     logger.info(f"Waiting to write {writer.num_queued} blocks of data.")
@@ -318,6 +312,7 @@ def run_wrapped_phase_single(
 
     logger.info("Repacking for more compression")
     io.repack_rasters(phase_linked_slc_files, keep_bits=12)
+    io.repack_rasters(cor_output_files, keep_bits=8)
 
     written_comp_slc = output_files[0]
 
@@ -371,11 +366,12 @@ def setup_output_folder(
     ministack: MiniStackInfo,
     driver: str = "GTiff",
     dtype="complex64",
+    cor_dtype="float32",
     like_filename: Optional[Filename] = None,
     strides: Optional[dict[str, int]] = None,
     nodata: Optional[float] = 0,
     output_folder: Optional[Path] = None,
-) -> list[Path]:
+) -> tuple[list[Path], list[Path]]:
     """Create empty output files for each band after `start_idx` in `vrt_stack`.
 
     Also creates an empty file for the compressed SLC.
@@ -421,10 +417,10 @@ def setup_output_folder(
     date_strs = ministack.get_date_str_list()[start_idx:]
 
     phase_linked_slc_files = []
+    cor_files = []
     for filename in date_strs:
         slc_name = Path(filename).stem
         output_path = output_folder / f"{slc_name}.slc.tif"
-
         io.write_arr(
             arr=None,
             like_filename=like_filename,
@@ -435,6 +431,19 @@ def setup_output_folder(
             strides=strides,
             nodata=nodata,
         )
-
         phase_linked_slc_files.append(output_path)
-    return phase_linked_slc_files
+
+        cor_output_path = output_folder / f"{slc_name}.cor.tif"
+        io.write_arr(
+            arr=None,
+            like_filename=like_filename,
+            output_name=cor_output_path,
+            driver=driver,
+            nbands=1,
+            dtype=cor_dtype,
+            strides=strides,
+            nodata=nodata,
+        )
+        cor_files.append(output_path)
+
+    return phase_linked_slc_files, cor_files

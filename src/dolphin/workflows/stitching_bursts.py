@@ -10,7 +10,6 @@ from dolphin import stitching
 from dolphin._log import log_runtime
 from dolphin._overviews import ImageType, create_image_overviews, create_overviews
 from dolphin._types import Bbox
-from dolphin.interferogram import estimate_interferometric_correlations
 from dolphin.io._utils import repack_raster
 
 from .config import OutputOptions
@@ -21,6 +20,7 @@ logger = logging.getLogger(__name__)
 @log_runtime
 def run(
     ifg_file_list: Sequence[Path],
+    cor_file_list: Sequence[Path],
     temp_coh_file_list: Sequence[Path],
     ps_file_list: Sequence[Path],
     amp_dispersion_list: Sequence[Path],
@@ -92,12 +92,24 @@ def run(
     )
     stitched_ifg_paths = list(date_to_ifg_path.values())
 
-    # Estimate the interferometric correlation from the stitched interferogram
-    interferometric_corr_paths = estimate_interferometric_correlations(
-        stitched_ifg_paths,
-        window_size=corr_window_size,
+    date_to_cor_path = stitching.merge_by_date(
+        image_file_list=cor_file_list,
+        file_date_fmt=file_date_fmt,
+        output_dir=stitched_ifg_dir,
+        output_suffix=".cor.tif",
+        driver="GTiff",
+        out_bounds=out_bounds,
+        out_bounds_epsg=output_options.bounds_epsg,
         num_workers=num_workers,
     )
+    interferometric_corr_paths = list(date_to_cor_path.values())
+
+    # # Estimate the interferometric correlation from the stitched interferogram
+    # interferometric_corr_paths = estimate_interferometric_correlations(
+    #     stitched_ifg_paths,
+    #     window_size=corr_window_size,
+    #     num_workers=num_workers,
+    # )
 
     # Stitch the correlation files
     stitched_temp_coh_file = stitched_ifg_dir / "temporal_coherence.tif"

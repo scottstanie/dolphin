@@ -59,10 +59,6 @@ def estimate_stack_covariance(
     if not np.iscomplexobj(slc_stack):
         msg = "The SLC stack must be complex."
         raise ValueError(msg)
-    if neighbor_arrays is None:
-        rows, cols = slc_stack.shape[1:]
-        full_window = (2 * half_window.y + 1, 2 * half_window.x + 1)
-        neighbor_arrays = jnp.ones((rows, cols, *full_window), dtype=bool)
 
     nslc, rows, cols = slc_stack.shape
 
@@ -77,16 +73,14 @@ def estimate_stack_covariance(
     in_c_start = col_strides // 2
 
     if neighbor_arrays is None:
-        neighbor_arrays = jnp.ones(
-            (out_rows, out_cols, 2 * half_window[0] + 1, 2 * half_window[1] + 1),
-            dtype=bool,
-        )
+        full_window = (2 * half_window.y + 1, 2 * half_window.x + 1)
+        neighbor_arrays = jnp.ones((rows, cols, *full_window), dtype=bool)
 
     def _process_row_col(out_r, out_c):
         """Get slices for, and process, one pixel's window."""
         in_r = in_r_start + out_r * row_strides
         in_c = in_c_start + out_c * col_strides
-        # Get a 3D slice, size (row_window, col_window, nslc)
+        # Get a 3D slice, size (nslc, row_window, col_window)
         slc_window = _get_stack_window(slc_stack, in_r, in_c, half_row, half_col)
         # Reshape to be (nslc, num_samples)
         slc_samples = slc_window.reshape(nslc, -1)

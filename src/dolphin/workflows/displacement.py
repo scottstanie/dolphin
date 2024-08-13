@@ -132,6 +132,7 @@ def run(
         wrapped_phase_cfgs = [(b, cfg)]
 
     ifg_file_list: list[Path] = []
+    cor_file_list: list[Path] = []
     temp_coh_file_list: list[Path] = []
     ps_file_list: list[Path] = []
     amp_dispersion_file_list: list[Path] = []
@@ -169,10 +170,17 @@ def run(
         for fut in fut_to_burst:
             burst = fut_to_burst[fut]
 
-            cur_ifg_list, comp_slcs, temp_coh, ps_file, amp_disp_file, shp_count = (
-                fut.result()
-            )
+            (
+                cur_ifg_list,
+                comp_slcs,
+                cur_cor_list,
+                temp_coh,
+                ps_file,
+                amp_disp_file,
+                shp_count,
+            ) = fut.result()
             ifg_file_list.extend(cur_ifg_list)
+            cor_file_list.extend(cur_cor_list)
             comp_slc_dict[burst] = comp_slcs
             temp_coh_file_list.append(temp_coh)
             ps_file_list.append(ps_file)
@@ -186,7 +194,7 @@ def run(
     # TODO: figure out how best to pick the corr size
     # Is there one best size? dependent on `half_window` or resolution?
     # For now, just pick a reasonable size
-    corr_window_size = (11, 11)
+    # corr_window_size = (11, 11)
     (
         stitched_ifg_paths,
         stitched_cor_paths,
@@ -196,6 +204,7 @@ def run(
         stitched_shp_count_file,
     ) = stitching_bursts.run(
         ifg_file_list=ifg_file_list,
+        cor_file_list=cor_file_list,
         temp_coh_file_list=temp_coh_file_list,
         ps_file_list=ps_file_list,
         amp_dispersion_list=amp_dispersion_file_list,
@@ -203,7 +212,7 @@ def run(
         stitched_ifg_dir=cfg.interferogram_network._directory,
         output_options=cfg.output_options,
         file_date_fmt=cfg.input_options.cslc_date_fmt,
-        corr_window_size=corr_window_size,
+        # corr_window_size=corr_window_size,
     )
 
     # ###################################

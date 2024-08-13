@@ -41,6 +41,9 @@ class PhaseLinkOutput(NamedTuple):
     cpx_phase: np.ndarray
     """Estimated linked phase."""
 
+    cor_images: np.ndarray
+    """A stack of correlation images to write out."""
+
     temp_coh: np.ndarray
     """Temporal coherence of the optimization.
     A goodness of fit parameter from 0 to 1 at each pixel.
@@ -57,9 +60,6 @@ class PhaseLinkOutput(NamedTuple):
 
     avg_coh: np.ndarray | None = None
     """Average coherence across dates for each SLC."""
-
-    cor_images: np.ndarray | None = None
-    """A stack of correlation images to write out."""
 
 
 def run_phase_linking(
@@ -343,27 +343,12 @@ def run_cpl(
     else:
         shp_counts = jnp.sum(neighbor_arrays, axis=(-2, -1))
 
-    if calc_average_coh:
-        # If requested, average the Cov matrix at each row for reference selection
-        avg_coh_per_date = jnp.abs(C_arrays).mean(axis=3)
-        avg_coh = np.argmax(avg_coh_per_date, axis=2)
-    else:
-        avg_coh = None
-
-    if save_cor_images:
-        n_slc = len(slc_stack)
-        row_idxs, col_idxs = np.triu_indices(n_slc, k=1)
-        # In [13]: C.shape
-        # Out[13]: (3, 4, 5, 5)
-        # In [12]: C[:, :, row_idxs, col_idxs].shape
-        # Out[12]: (3, 4, 15)
-        cor_images = jnp.abs(C_arrays[:, :, row_idxs, col_idxs]).astype("float16")
-        cor_images = jnp.moveaxis(cor_images, -1, 0)
-    else:
-        cor_images = None
-
-    # Reshape the (rows, cols, nslcs) output to be same as input stack
-    cpx_phase_reshaped = jnp.moveaxis(cpx_phase, -1, 0)
+    avg_coh_per_date = jnp.abs(C_arrays).mean(axis=-1).astype("float16")
+    # If requested, average the Cov matrix at each row for reference selection
+    # TODO: this shouldn't just be a direct argmax, but rather weighted argmax
+    # avg_coh_per_date = jnp.abs(C_arrays).mean(axis=3).astype("float16")
+    avg_coh = np.argmax(avg_coh_per_date, axis=2) if calc_average_coh else None
+    cor_images = jnp.moveaxis(avg_coh_per_date, -1, 0) if save_cor_images else None
 
     return PhaseLinkOutput(
         cpx_phase=cpx_phase_reshaped,

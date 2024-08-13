@@ -149,9 +149,11 @@ def run(
         reference_idx=reference_idx,
     )
 
-    phase_linked_slcs = sorted(pl_path.glob("2*.tif"))
+    phase_linked_slcs = sorted(pl_path.glob("2*.slc.tif"))
     if len(phase_linked_slcs) > 0:
         logger.info(f"Skipping EVD step, {len(phase_linked_slcs)} files already exist")
+        cor_file_list = sorted(pl_path.glob("2*.cor.tif"))
+        print(f"{cor_file_list = }")
         comp_slc_list = sorted(pl_path.glob("compressed*tif"))
         temp_coh_file = next(pl_path.glob("temporal_coherence*tif"))
         shp_count_file = next(pl_path.glob("shp_count*tif"))
@@ -163,26 +165,30 @@ def run(
         # If we pre-compute it from some big stack, we need to use that for SHP
         # finding, not use the size of `slc_vrt_file`
         shp_nslc = None
-        (phase_linked_slcs, comp_slc_list, temp_coh_file, shp_count_file) = (
-            sequential.run_wrapped_phase_sequential(
-                slc_vrt_file=vrt_stack.outfile,
-                ministack_planner=ministack_planner,
-                ministack_size=cfg.phase_linking.ministack_size,
-                half_window=cfg.phase_linking.half_window.model_dump(),
-                strides=strides,
-                use_evd=cfg.phase_linking.use_evd,
-                beta=cfg.phase_linking.beta,
-                mask_file=mask_filename,
-                ps_mask_file=ps_output,
-                amp_mean_file=cfg.ps_options._amp_mean_file,
-                amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
-                shp_method=cfg.phase_linking.shp_method,
-                shp_alpha=cfg.phase_linking.shp_alpha,
-                shp_nslc=shp_nslc,
-                block_shape=cfg.worker_settings.block_shape,
-                baseline_lag=cfg.phase_linking.baseline_lag,
-                **kwargs,
-            )
+        (
+            phase_linked_slcs,
+            comp_slc_list,
+            cor_file_list,
+            temp_coh_file,
+            shp_count_file,
+        ) = sequential.run_wrapped_phase_sequential(
+            slc_vrt_file=vrt_stack.outfile,
+            ministack_planner=ministack_planner,
+            ministack_size=cfg.phase_linking.ministack_size,
+            half_window=cfg.phase_linking.half_window.model_dump(),
+            strides=strides,
+            use_evd=cfg.phase_linking.use_evd,
+            beta=cfg.phase_linking.beta,
+            mask_file=mask_filename,
+            ps_mask_file=ps_output,
+            amp_mean_file=cfg.ps_options._amp_mean_file,
+            amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
+            shp_method=cfg.phase_linking.shp_method,
+            shp_alpha=cfg.phase_linking.shp_alpha,
+            shp_nslc=shp_nslc,
+            block_shape=cfg.worker_settings.block_shape,
+            baseline_lag=cfg.phase_linking.baseline_lag,
+            **kwargs,
         )
     # Dump the used options for JSON parsing
     logger.info(
@@ -204,6 +210,7 @@ def run(
         return (
             existing_ifgs,
             comp_slc_list,
+            cor_file_list,
             temp_coh_file,
             ps_looked_file,
             amp_disp_looked_file,
@@ -217,6 +224,7 @@ def run(
     return (
         ifg_file_list,
         comp_slc_list,
+        cor_file_list,
         temp_coh_file,
         ps_looked_file,
         amp_disp_looked_file,

@@ -63,6 +63,7 @@ def run_wrapped_phase_sequential(
 
     # list where each item is [output_slc_files] from a ministack
     output_slc_files: list[list] = []
+    output_cor_files: list[list] = []
     # Each item is the temp_coh/shp_count file from a ministack
     temp_coh_files: list[Path] = []
     shp_count_files: list[Path] = []
@@ -116,10 +117,17 @@ def run_wrapped_phase_sequential(
                 **tqdm_kwargs,
             )
 
-        cur_output_files, cur_comp_slc_file, temp_coh_file, shp_count_file = (
-            _get_outputs_from_folder(cur_output_folder)
-        )
+        (
+            cur_output_files,
+            cur_comp_slc_file,
+            out_cor_files,
+            temp_coh_file,
+            shp_count_file,
+        ) = _get_outputs_from_folder(cur_output_folder)
         output_slc_files.append(cur_output_files)
+        output_cor_files.append(out_cor_files)
+        print(output_cor_files)
+        print("??????")
         temp_coh_files.append(temp_coh_file)
         shp_count_files.append(shp_count_file)
 
@@ -137,19 +145,31 @@ def run_wrapped_phase_sequential(
 
     # Combine the separate SLC output lists into a single list
     all_slc_files = list(chain.from_iterable(output_slc_files))
+    all_cor_files = list(chain.from_iterable(output_cor_files))
     all_comp_slc_files = [ms.get_compressed_slc_info().path for ms in ministacks]
 
     out_pl_slcs = []
-    for slc_fname in all_slc_files:
-        slc_fname.rename(output_folder / slc_fname.name)
-        out_pl_slcs.append(output_folder / slc_fname.name)
+    for path in all_slc_files:
+        path.rename(output_folder / path.name)
+        out_pl_slcs.append(output_folder / path.name)
+
+    out_cors = []
+    for path in all_cor_files:
+        path.rename(output_folder / path.name)
+        out_cors.append(output_folder / path.name)
 
     comp_slc_outputs = []
-    for p in all_comp_slc_files:
-        p.rename(output_folder / p.name)
-        comp_slc_outputs.append(output_folder / p.name)
+    for path in all_comp_slc_files:
+        path.rename(output_folder / path.name)
+        comp_slc_outputs.append(output_folder / path.name)
 
-    return out_pl_slcs, comp_slc_outputs, output_temp_coh_file, output_shp_count_file
+    return (
+        out_pl_slcs,
+        comp_slc_outputs,
+        out_cors,
+        output_temp_coh_file,
+        output_shp_count_file,
+    )
 
 
 def _get_outputs_from_folder(
@@ -157,11 +177,12 @@ def _get_outputs_from_folder(
 ) -> tuple[list[Path], Path, Path, Path]:
     cur_output_files = sorted(output_folder.glob("2*.slc.tif"))
     cur_comp_slc_file = next(output_folder.glob("compressed_*"))
+    cor_files = sorted(output_folder.glob("2*.cor.tif"))
     temp_coh_file = next(output_folder.glob("temporal_coherence_*"))
     shp_count_file = next(output_folder.glob("shp_counts_*"))
     # Currently ignoring to not stitch:
     # eigenvalues, estimator, avg_coh
-    return cur_output_files, cur_comp_slc_file, temp_coh_file, shp_count_file
+    return cur_output_files, cur_comp_slc_file, cor_files, temp_coh_file, shp_count_file
 
 
 def _average_rasters(file_list: list[Path], outfile: Path, output_type: str):

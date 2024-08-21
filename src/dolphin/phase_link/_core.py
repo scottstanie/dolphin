@@ -172,12 +172,9 @@ def run_phase_linking(
     # Make sure the PS mask didn't have extra burst borders that are nodata here
     ps_mask[nodata_mask] = False
 
-    # TODO: Any other masks we need?
-    ignore_mask = np.logical_or.reduce((nodata_mask, ps_mask))
-
     # Make a copy, and set the masked pixels to np.nan
     slc_stack_masked = slc_stack.copy()
-    slc_stack_masked[:, ignore_mask] = np.nan
+    slc_stack_masked[:, nodata_mask] = np.nan
 
     cpl_out = run_cpl(
         slc_stack=slc_stack_masked,

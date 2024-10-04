@@ -190,6 +190,10 @@ def run(
                 corr_paths if len(corr_paths) == len(inverted_phase_paths) else None
             )
 
+        conncomp_file_list = (
+            conncomp_paths if len(conncomp_paths) == len(inverted_phase_paths) else None
+        )
+
         if velocity_file is None:
             velocity_file = Path(output_dir) / "velocity.tif"
 
@@ -199,6 +203,7 @@ def run(
             reference=ref_point,
             cor_file_list=cor_file_list,
             cor_threshold=correlation_threshold,
+            conncomp_file_list=conncomp_file_list,
             block_shape=block_shape,
             num_threads=num_threads,
         )
@@ -552,6 +557,9 @@ def create_velocity(
     output_file: PathOrStr,
     reference: ReferencePoint,
     date_list: Sequence[DateOrDatetime] | None = None,
+    unw_subdataset: str | None = None,
+    conncomp_file_list: Sequence[PathOrStr] | None = None,
+    conncomp_subdataset: str | None = None,
     cor_file_list: Sequence[PathOrStr] | None = None,
     cor_threshold: float = 0.2,
     block_shape: tuple[int, int] = (256, 256),
@@ -576,6 +584,14 @@ def create_velocity(
     date_list : Sequence[DateOrDatetime], optional
         List of dates corresponding to the unwrapped phase files.
         If not provided, will be parsed from filenames in `unw_file_list`.
+    unw_subdataset : str, optional
+        If `unw_file_list` is a sequence of HDF5/NetCDF file, the subdataset
+        to read from. Not required if reading, e.g., GeoTIFFs.
+        Default is None.
+    conncomp_subdataset : str, optional
+        If `conncomp_file_list` is a sequence of HDF5/NetCDF file, the subdataset
+        to read from.
+        Default is None.
     cor_file_list : Sequence[PathOrStr], optional
         List of correlation files to use for weighting the velocity estimation.
         If not provided, all weights are set to 1.
@@ -599,7 +615,7 @@ def create_velocity(
 
     if date_list is None:
         date_list = [get_dates(f)[1] for f in unw_file_list]
-    x_arr = datetime_to_float(date_list)
+    time_since_start = datetime_to_float(date_list)
 
     # Set up the input data readers
     out_dir = Path(output_file).parent
@@ -607,22 +623,26 @@ def create_velocity(
         file_list=unw_file_list,
         outfile=out_dir / "velocity_inputs.vrt",
         skip_size_check=True,
+        subdataset=unw_subdataset,
     )
-    if cor_file_list is not None:
-        if len(cor_file_list) != len(unw_file_list):
+
+    if conncomp_file_list is not None:
+        if len(conncomp_file_list) != len(unw_file_list):
             msg = "Mismatch in number of input files provided:"
-            msg += f"{len(cor_file_list) = }, but {len(unw_file_list) = }"
+            msg += f"{len(conncomp_file_list) = }, but {len(unw_file_list) = }"
             raise ValueError(msg)
 
-        logger.info("Using correlation to weight velocity fit")
-        cor_reader = io.VRTStack(
-            file_list=cor_file_list,
-            outfile=out_dir / "cor_inputs.vrt",
+        logger.info("Using non-zero connected components only to fit velocity")
+        conncomp_reader = io.VRTStack(
+            file_list=conncomp_file_list,
+            outfile=out_dir / "conncomp_inputs.vrt",
             skip_size_check=True,
+            subdataset=conncomp_subdataset,
+            read_masked=True,
         )
     else:
         logger.info("Using unweighted fit for velocity.")
-        cor_reader = None
+        conncomp_reader = None
 
     # Read in the reference point
     ref_row, ref_col = reference
@@ -633,20 +653,22 @@ def create_velocity(
         readers: Sequence[io.StackReader], rows: slice, cols: slice
     ) -> tuple[np.ndarray, slice, slice]:
         # Only use the cor_reader if it's the same shape as the unw_reader
+        unw_reader = readers[0]
+        unw_stack = unw_reader[:, rows, cols]
+        weights = None
         if len(readers) == 2:
-            unw_reader, cor_reader = readers
-            unw_stack = unw_reader[:, rows, cols]
-            weights = cor_reader[:, rows, cols]
-            weights[weights < cor_threshold] = 0
+            conncomp_reader = readers[1]
+            conncomps = conncomp_reader[:, rows, cols].filled(0)
+            weights = (conncomps != 0).astype("float32")
         else:
-            unw_stack = readers[0][:, rows, cols]
-            # weights = np.ones_like(unw_stack)
             weights = None
         # Reference the data
         unw_stack = unw_stack - ref_data
         # Fit a line to each pixel with weighted least squares
         return (
-            estimate_velocity(x_arr=x_arr, unw_stack=unw_stack, weight_stack=weights),
+            estimate_velocity(
+                x_arr=time_since_start, unw_stack=unw_stack, weight_stack=weights
+            ),
             rows,
             cols,
         )
@@ -657,8 +679,8 @@ def create_velocity(
     # VRTStack seems to take ~30 secs to open, 1 min to read
     # Very possible there's a tuning param/rasterio config to fix, but not sure.
     readers = [unw_reader]
-    if cor_reader is not None:
-        readers.append(cor_reader)
+    if conncomp_reader is not None:
+        readers.append(conncomp_reader)
     writer = io.BackgroundRasterWriter(output_file, like_filename=unw_file_list[0])
     io.process_blocks(
         readers=readers,

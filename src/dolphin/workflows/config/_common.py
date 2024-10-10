@@ -162,6 +162,13 @@ class InterferogramNetwork(BaseModel, extra="forbid"):
             " interferograms to form."
         ),
     )
+    estimate_psuedo_correlation: bool = Field(
+        False,
+        description=(
+            "Create a phase quality raster for each phase-linked interferogram using a"
+            " sliding window estimate of correlation."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_zero_parameters(self) -> InterferogramNetwork:

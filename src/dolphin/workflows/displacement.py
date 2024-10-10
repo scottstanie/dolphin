@@ -10,7 +10,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import NamedTuple
 
-from opera_utils import group_by_burst, group_by_date  # , get_dates
+from opera_utils import group_by_burst, group_by_date
 from tqdm.auto import tqdm
 
 from dolphin import __version__, io, timeseries, utils
@@ -20,7 +20,7 @@ from dolphin.workflows import CallFunc
 
 from . import stitching_bursts, unwrapping, wrapped_phase
 from ._utils import _create_burst_cfg, _remove_dir_if_empty, parse_ionosphere_files
-from .config import DisplacementWorkflow  # , TimeseriesOptions
+from .config import DisplacementWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class OutputPaths(NamedTuple):
 
     comp_slc_dict: dict[str, list[Path]]
     stitched_ifg_paths: list[Path]
-    stitched_cor_paths: list[Path]
+    stitched_cor_paths: list[Path] | None
     stitched_temp_coh_file: Path
     stitched_ps_file: Path
     stitched_amp_dispersion_file: Path
@@ -77,7 +77,7 @@ def run(
         # Make sure it's not some other ValueError
         if "Could not parse burst id" not in str(e):
             raise
-        # Otherwise, we have SLC files which are not OPERA burst files
+        # Otherwise, we have SLC files which are not OPERA S1 burst files
         grouped_slc_files = {"": cfg.cslc_file_list}
 
     if cfg.amplitude_dispersion_files:
@@ -88,10 +88,6 @@ def run(
         grouped_amp_mean_files = group_by_burst(cfg.amplitude_mean_files)
     else:
         grouped_amp_mean_files = defaultdict(list)
-
-    grouped_iono_files = parse_ionosphere_files(
-        cfg.correction_options.ionosphere_files, cfg.correction_options._iono_date_fmt
-    )
 
     # ######################################
     # 1. Burst-wise Wrapped phase estimation
@@ -324,6 +320,11 @@ def run(
                 logger.info("No weather model, skip tropospheric correction.")
 
         # Ionosphere
+        grouped_iono_files = parse_ionosphere_files(
+            cfg.correction_options.ionosphere_files,
+            cfg.correction_options._iono_date_fmt,
+        )
+
         if grouped_iono_files:
             from dolphin.atmosphere import estimate_ionospheric_delay
 

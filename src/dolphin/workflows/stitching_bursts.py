@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Sequence
+from typing import NamedTuple, Sequence
 
 from dolphin import stitching
 from dolphin._log import log_runtime
@@ -18,6 +18,23 @@ from .config import OutputOptions
 logger = logging.getLogger(__name__)
 
 
+class StitchedOutputs(NamedTuple):
+    """Output rasters from stitching step."""
+
+    stitched_ifg_paths: list[Path]
+    """list of Paths to the stitched interferograms."""
+    interferometric_corr_paths: list[Path] | None
+    """list of Paths to interferometric correlation files created."""
+    stitched_temp_coh_file: Path
+    """Path to temporal correlation file created."""
+    stitched_ps_file: Path
+    """Path to ps mask file created."""
+    stitched_amp_disp_file: Path
+    """Path to amplitude dispersion file created."""
+    stitched_shp_count_file: Path
+    """Path to SHP count file created."""
+
+
 @log_runtime
 def run(
     ifg_file_list: Sequence[Path],
@@ -27,29 +44,35 @@ def run(
     shp_count_file_list: Sequence[Path],
     stitched_ifg_dir: Path,
     output_options: OutputOptions,
+    estimate_correlation: bool = True,
     file_date_fmt: str = "%Y%m%d",
     corr_window_size: tuple[int, int] = (11, 11),
     num_workers: int = 3,
-) -> tuple[list[Path], list[Path], Path, Path, Path, Path]:
-    """Run the displacement workflow on a stack of SLCs.
+) -> StitchedOutputs:
+    """Stitch together spatial subsets from phase linking.
+
+    For Sentinel-1 processing, these can be burst-wise interferograms.
 
     Parameters
     ----------
     ifg_file_list : Sequence[Path]
-        Sequence of burst-wise interferograms files to stitch.
+        Sequence of interferograms files to stitch.
     temp_coh_file_list : Sequence[Path]
-        Sequence of paths to the burst-wise temporal coherence files.
+        Sequence of paths to the temporal coherence files.
     ps_file_list : Sequence[Path]
-        Sequence of paths to the (looked) burst-wise ps mask files.
+        Sequence of paths to the (looked) ps mask files.
     amp_dispersion_list : Sequence[Path]
-        Sequence of paths to the (looked) burst-wise amplitude dispersion files.
+        Sequence of paths to the (looked) amplitude dispersion files.
     shp_count_file_list : Sequence[Path]
-        Sequence of paths to the burst-wise SHP counts files.
+        Sequence of paths to the SHP counts files.
     stitched_ifg_dir : Path
         Location to store the output stitched ifgs and correlations
     output_options : OutputOptions
         [`UnwrapWorkflow`][dolphin.workflows.config.OutputOptions] object
         for with parameters for the input/output options
+    estimate_correlation : bool
+        Flag to indicate that the sliding-window estimator of correlation should
+        be run on the interferograms
     file_date_fmt : str
         Format of dates contained in filenames.
         default = "%Y%m%d"
@@ -64,7 +87,7 @@ def run(
     -------
     stitched_ifg_paths : list[Path]
         list of Paths to the stitched interferograms.
-    interferometric_corr_paths : list[Path]
+    interferometric_corr_paths : list[Path] | None
         list of Paths to interferometric correlation files created.
     stitched_temp_coh_file : Path
         Path to temporal correlation file created.
@@ -93,11 +116,14 @@ def run(
     stitched_ifg_paths = list(date_to_ifg_path.values())
 
     # Estimate the interferometric correlation from the stitched interferogram
-    interferometric_corr_paths = estimate_interferometric_correlations(
-        stitched_ifg_paths,
-        window_size=corr_window_size,
-        num_workers=num_workers,
-    )
+    if estimate_correlation:
+        interferometric_corr_paths = estimate_interferometric_correlations(
+            stitched_ifg_paths,
+            window_size=corr_window_size,
+            num_workers=num_workers,
+        )
+    else:
+        interferometric_corr_paths = None
 
     # Stitch the correlation files
     stitched_temp_coh_file = stitched_ifg_dir / "temporal_coherence.tif"
@@ -154,7 +180,7 @@ def run(
         create_image_overviews(stitched_amp_disp_file, image_type=ImageType.CORRELATION)
         create_image_overviews(stitched_shp_count_file, image_type=ImageType.PS)
 
-    return (
+    return StitchedOutputs(
         stitched_ifg_paths,
         interferometric_corr_paths,
         stitched_temp_coh_file,

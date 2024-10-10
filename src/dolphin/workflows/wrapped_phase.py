@@ -6,10 +6,9 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence, cast
 
-import numpy as np
 from opera_utils import get_dates, make_nodata_mask
 
-from dolphin import Bbox, Filename, interferogram, masking, ps, stack
+from dolphin import Bbox, Filename, interferogram, masking, ps
 from dolphin._log import log_runtime, setup_logging
 from dolphin.io import VRTStack
 
@@ -75,12 +74,6 @@ def run(
 
     # Mark any files beginning with "compressed" as compressed
     is_compressed = ["compressed" in str(f).lower() for f in input_file_list]
-    input_dates = _get_input_dates(
-        input_file_list, is_compressed, cfg.input_options.cslc_date_fmt
-    )
-    reference_date, reference_idx = _get_reference_date_idx(
-        input_file_list, is_compressed, input_dates
-    )
 
     non_compressed_slcs = [
         f for f, is_comp in zip(input_file_list, is_compressed) if not is_comp
@@ -90,6 +83,7 @@ def run(
     mask_filename = _get_mask(
         output_dir=cfg.work_directory,
         output_bounds=cfg.output_options.bounds,
+        output_bounds_epsg=cfg.output_options.bounds_epsg,
         like_filename=vrt_stack.outfile,
         cslc_file_list=non_compressed_slcs,
     )
@@ -139,15 +133,17 @@ def run(
     pl_path = cfg.phase_linking._directory
     pl_path.mkdir(parents=True, exist_ok=True)
 
-    ministack_planner = stack.MiniStackPlanner(
-        file_list=input_file_list,
-        dates=input_dates,
-        is_compressed=is_compressed,
-        output_folder=pl_path,
-        max_num_compressed=cfg.phase_linking.max_num_compressed,
-        reference_date=reference_date,
-        reference_idx=reference_idx,
+    input_dates = _get_input_dates(
+        input_file_list, is_compressed, cfg.input_options.cslc_date_fmt
     )
+
+    extra_reference_date = cfg.output_options.extra_reference_date
+    if extra_reference_date:
+        new_compressed_slc_reference_idx = _get_nearest_idx(
+            [dtup[0] for dtup in input_dates], extra_reference_date
+        )
+    else:
+        new_compressed_slc_reference_idx = None
 
     phase_linked_slcs = sorted(pl_path.glob("2*.slc.tif"))
     if len(phase_linked_slcs) > 0:
@@ -164,30 +160,28 @@ def run(
         # If we pre-compute it from some big stack, we need to use that for SHP
         # finding, not use the size of `slc_vrt_file`
         shp_nslc = None
-        (
-            phase_linked_slcs,
-            comp_slc_list,
-            cor_file_list,
-            temp_coh_file,
-            shp_count_file,
-        ) = sequential.run_wrapped_phase_sequential(
-            slc_vrt_file=vrt_stack.outfile,
-            ministack_planner=ministack_planner,
-            ministack_size=cfg.phase_linking.ministack_size,
-            half_window=cfg.phase_linking.half_window.model_dump(),
-            strides=strides,
-            use_evd=cfg.phase_linking.use_evd,
-            beta=cfg.phase_linking.beta,
-            mask_file=mask_filename,
-            ps_mask_file=ps_output,
-            amp_mean_file=cfg.ps_options._amp_mean_file,
-            amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
-            shp_method=cfg.phase_linking.shp_method,
-            shp_alpha=cfg.phase_linking.shp_alpha,
-            shp_nslc=shp_nslc,
-            block_shape=cfg.worker_settings.block_shape,
-            baseline_lag=cfg.phase_linking.baseline_lag,
-            **kwargs,
+        (phase_linked_slcs, comp_slc_list, cor_file_list, temp_coh_file, shp_count_file) = (
+            sequential.run_wrapped_phase_sequential(
+                slc_vrt_stack=vrt_stack,
+                output_folder=pl_path,
+                ministack_size=cfg.phase_linking.ministack_size,
+                new_compressed_reference_idx=new_compressed_slc_reference_idx,
+                half_window=cfg.phase_linking.half_window.model_dump(),
+                strides=strides,
+                use_evd=cfg.phase_linking.use_evd,
+                beta=cfg.phase_linking.beta,
+                mask_file=mask_filename,
+                ps_mask_file=ps_output,
+                amp_mean_file=cfg.ps_options._amp_mean_file,
+                amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
+                shp_method=cfg.phase_linking.shp_method,
+                shp_alpha=cfg.phase_linking.shp_alpha,
+                shp_nslc=shp_nslc,
+                cslc_date_fmt=cfg.input_options.cslc_date_fmt,
+                block_shape=cfg.worker_settings.block_shape,
+                baseline_lag=cfg.phase_linking.baseline_lag,
+                **kwargs,
+            )
         )
     # Dump the used options for JSON parsing
     logger.info(
@@ -217,8 +211,18 @@ def run(
         )
 
     logger.info(f"Creating virtual interferograms from {len(phase_linked_slcs)} files")
+    # TODO: with manual indexes, this may be split into 2 and redone
+    reference_date = [
+        get_dates(f, fmt=cfg.input_options.cslc_date_fmt)[0] for f in input_file_list
+    ][cfg.phase_linking.output_reference_idx]
+
+    ifg_file_list: list[Path] = []
     ifg_file_list = create_ifgs(
-        ifg_network, phase_linked_slcs, any(is_compressed), reference_date
+        interferogram_network=ifg_network,
+        phase_linked_slcs=phase_linked_slcs,
+        contained_compressed_slcs=any(is_compressed),
+        reference_date=reference_date,
+        extra_reference_date=cfg.output_options.extra_reference_date,
     )
     return (
         ifg_file_list,
@@ -236,6 +240,7 @@ def create_ifgs(
     phase_linked_slcs: Sequence[Path],
     contained_compressed_slcs: bool,
     reference_date: datetime.datetime,
+    extra_reference_date: datetime.datetime | None = None,
     dry_run: bool = False,
 ) -> list[Path]:
     """Create the list of interferograms for the `phase_linked_slcs`.
@@ -252,6 +257,9 @@ def create_ifgs(
         compressed SLCs.
     reference_date : datetime.datetime
         Date/datetime of the "base phase" for the `phase_linked_slcs`
+    extra_reference_date : datetime.datetime, optional
+        If provided, makes another set of interferograms referenced to this
+        for all dates later than it.
     dry_run : bool
         Flag indicating that the ifgs should not be written to disk.
         Default = False (ifgs will be created).
@@ -273,10 +281,13 @@ def create_ifgs(
     ifg_dir = interferogram_network._directory
     if not dry_run:
         ifg_dir.mkdir(parents=True, exist_ok=True)
+
     ifg_file_list: list[Path] = []
-    if not contained_compressed_slcs:
-        # When no compressed SLCs were passed in to the config, we can directly pass
-        # options to `Network` and get the ifg list
+
+    secondary_dates = [get_dates(f)[0] for f in phase_linked_slcs]
+    if not contained_compressed_slcs and extra_reference_date is None:
+        # When no compressed SLCs/extra reference were passed in to the config,
+        # we can directly pass options to `Network` and get the ifg list
         network = interferogram.Network(
             slc_list=phase_linked_slcs,
             reference_idx=interferogram_network.reference_idx,
@@ -300,21 +311,39 @@ def create_ifgs(
     # The total SLC phases we have to work with are
     # 1. reference date (might be before any dates in the filenames)
     # 2. the secondary of all phase-linked SLCs (which are the names of the files)
+    if extra_reference_date is None:
+        # To get the ifgs from the reference date to secondary(conj), this means
+        # a `.conj()` on the phase-linked SLCs (currently `day1.conj() * day2`)
+        single_ref_ifgs = [
+            interferogram.convert_pl_to_ifg(
+                f, reference_date=reference_date, output_dir=ifg_dir, dry_run=dry_run
+            )
+            for f in phase_linked_slcs
+        ]
+    else:
+        manual_reference_idx = _get_nearest_idx(secondary_dates, extra_reference_date)
 
-    # To get the ifgs from the reference date to secondary(conj), this involves doing
-    # a `.conj()` on the phase-linked SLCs (which are currently `day1.conj() * day2`)
-    single_ref_ifgs = [
-        interferogram.convert_pl_to_ifg(
-            f, reference_date=reference_date, output_dir=ifg_dir, dry_run=dry_run
+        single_ref_ifgs = [
+            interferogram.convert_pl_to_ifg(
+                f, reference_date=reference_date, output_dir=ifg_dir, dry_run=dry_run
+            )
+            for f in phase_linked_slcs[: manual_reference_idx + 1]
+        ]
+        single_ref_ifgs.extend(
+            [
+                interferogram.convert_pl_to_ifg(
+                    f,
+                    reference_date=extra_reference_date,
+                    output_dir=ifg_dir,
+                    dry_run=dry_run,
+                )
+                for f in phase_linked_slcs[manual_reference_idx + 1 :]
+            ]
         )
-        for f in phase_linked_slcs
-    ]
 
-    # If we're only wanting single-reference day-(reference) to day-k interferograms,
-    # these are all we need
-    # XX Fix this hack for later
     if interferogram_network.indexes and interferogram_network.indexes == [(0, -1)]:
         ifg_file_list.append(single_ref_ifgs[-1])
+        # XXX Fix this hack for later
         # # This isn't really what we want here, the logic is different than Network:
         # ifgs = [
         #     (single_ref_ifgs[ref_idx], single_ref_ifgs[sec_idx])
@@ -340,12 +369,11 @@ def create_ifgs(
         # (which are the (ref_date, ...) interferograms),...
         ifgs_ref_date = single_ref_ifgs[:max_b]
         # ...then combine it with the results from the `Network`
-        # Manually specify the dates, which come from the names of `phase_linked_slcs`
-        secondary_dates = [get_dates(f)[0] for f in phase_linked_slcs]
         network_rest = interferogram.Network(
             slc_list=phase_linked_slcs,
             max_bandwidth=max_b,
             outdir=ifg_dir,
+            # Manually specify the dates, which come from the names of phase_linked_slcs
             dates=secondary_dates,
             write=not dry_run,
             verify_slcs=not dry_run,
@@ -369,23 +397,11 @@ def create_ifgs(
     written_ifgs = set(ifg_dir.glob("*.int*"))
     for p in written_ifgs - requested_ifgs:
         p.unlink()
+
+    if len(set(get_dates(ifg_file_list[0]))) == 1:
+        same_date_ifg = ifg_file_list.pop(0)
+        same_date_ifg.unlink()
     return ifg_file_list
-
-
-def _get_reference_date_idx(
-    input_file_list: Sequence[Path],
-    is_compressed: Sequence[bool],
-    input_dates: Sequence[Sequence[datetime.datetime]],
-) -> tuple[datetime.datetime, int]:
-    is_compressed = ["compressed" in str(f).lower() for f in input_file_list]
-    if not is_compressed[0]:
-        return input_dates[0][0], 0
-
-    # Otherwise use the last Compressed SLC as reference
-    reference_idx = np.where(is_compressed)[0][-1]
-    reference_date = input_dates[reference_idx][0]
-
-    return reference_date, reference_idx
 
 
 def _get_input_dates(
@@ -395,11 +411,12 @@ def _get_input_dates(
     # For any that aren't compressed, take the first date.
     # this is because the official product name of OPERA/Sentinel1 has both
     # "acquisition_date" ... "generation_date" in the filename
+    # For compressed, we want the first 3 dates: (base phase, start, end)
     # TODO: this is a bit hacky, perhaps we can make this some input option
     # so that the user can specify how to get dates from their files (or even
     # directly pass in dates?)
     return [
-        dates[:1] if not is_comp else dates
+        dates[:1] if not is_comp else dates[:3]
         for dates, is_comp in zip(input_dates, is_compressed)
     ]
 
@@ -407,6 +424,7 @@ def _get_input_dates(
 def _get_mask(
     output_dir: Path,
     output_bounds: Bbox | tuple[float, float, float, float] | None,
+    output_bounds_epsg: int,
     like_filename: Filename,
     cslc_file_list: Sequence[Filename],
 ) -> Path | None:
@@ -430,6 +448,7 @@ def _get_mask(
         bounds_mask_filename = output_dir / "bounds_mask.tif"
         masking.create_bounds_mask(
             bounds=output_bounds,
+            bounds_epsg=output_bounds_epsg,
             output_filename=bounds_mask_filename,
             like_filename=like_filename,
         )
@@ -437,11 +456,12 @@ def _get_mask(
         # Then combine with the nodata mask
         if nodata_mask_file is not None:
             combined_mask_filename = output_dir / "combined_mask.tif"
-            masking.combine_mask_files(
-                mask_files=[bounds_mask_filename, nodata_mask_file],
-                output_file=combined_mask_filename,
-                output_convention=masking.MaskConvention.ZERO_IS_NODATA,
-            )
+            if not combined_mask_filename.exists():
+                masking.combine_mask_files(
+                    mask_files=[bounds_mask_filename, nodata_mask_file],
+                    output_file=combined_mask_filename,
+                    output_convention=masking.MaskConvention.ZERO_IS_NODATA,
+                )
             mask_filename = combined_mask_filename
         else:
             mask_filename = bounds_mask_filename
@@ -449,3 +469,22 @@ def _get_mask(
         mask_filename = nodata_mask_file
 
     return mask_filename
+
+
+def _get_nearest_idx(
+    input_dates: Sequence[datetime.datetime],
+    selected_date: datetime.datetime,
+) -> int:
+    """Find the index nearest to `selected_date` within `input_dates`."""
+    sorted_inputs = sorted(input_dates)
+    if not sorted_inputs[0] <= selected_date <= sorted_inputs[-1]:
+        msg = f"Requested {selected_date} falls outside of input range: "
+        msg += f"{sorted_inputs[0]}, {sorted_inputs[-1]}"
+        raise ValueError(msg)
+
+    nearest_idx = min(
+        range(len(input_dates)),
+        key=lambda i: abs((input_dates[i] - selected_date).total_seconds()),
+    )
+
+    return nearest_idx

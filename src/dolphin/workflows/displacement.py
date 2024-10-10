@@ -7,10 +7,8 @@ import logging
 import multiprocessing as mp
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from datetime import datetime
-from os import PathLike
 from pathlib import Path
-from typing import Mapping, NamedTuple, Sequence
+from typing import NamedTuple
 
 from opera_utils import group_by_burst, group_by_date  # , get_dates
 from tqdm.auto import tqdm
@@ -21,7 +19,7 @@ from dolphin.timeseries import ReferencePoint
 from dolphin.workflows import CallFunc
 
 from . import stitching_bursts, unwrapping, wrapped_phase
-from ._utils import _create_burst_cfg, _remove_dir_if_empty
+from ._utils import _create_burst_cfg, _remove_dir_if_empty, parse_ionosphere_files
 from .config import DisplacementWorkflow  # , TimeseriesOptions
 
 logger = logging.getLogger(__name__)
@@ -64,8 +62,8 @@ def run(
     if cfg.log_file is None:
         cfg.log_file = cfg.work_directory / "dolphin.log"
     # Set the logging level for all `dolphin.` modules
-    setup_logging(debug=debug, filename=cfg.log_file)
-    setup_logging(logger_name="spurt", debug=debug, filename=cfg.log_file)
+    for logger_name in ["dolphin", "spurt"]:
+        setup_logging(logger_name=logger_name, debug=debug, filename=cfg.log_file)
     # TODO: need to pass the cfg filename for the logger
     logger.debug(cfg.model_dump())
 
@@ -91,16 +89,9 @@ def run(
     else:
         grouped_amp_mean_files = defaultdict(list)
 
-    grouped_iono_files: Mapping[tuple[datetime], Sequence[str | PathLike[str]]] = {}
-    if len(cfg.correction_options.ionosphere_files) > 0:
-        for fmt in cfg.correction_options._iono_date_fmt:
-            group_iono = group_by_date(
-                cfg.correction_options.ionosphere_files,
-                file_date_fmt=fmt,
-            )
-            if len(next(iter(group_iono))) == 0:
-                continue
-            grouped_iono_files = {**grouped_iono_files, **group_iono}
+    grouped_iono_files = parse_ionosphere_files(
+        cfg.correction_options.ionosphere_files, cfg.correction_options._iono_date_fmt
+    )
 
     # ######################################
     # 1. Burst-wise Wrapped phase estimation
@@ -143,10 +134,10 @@ def run(
     comp_slc_dict: dict[str, list[Path]] = {}
     # Now for each burst, run the wrapped phase estimation
     # Try running several bursts in parallel...
+    # Use the Dummy one if not going parallel, as debugging is much simpler
+    num_parallel = min(cfg.worker_settings.n_parallel_bursts, len(grouped_slc_files))
     Executor = (
-        ProcessPoolExecutor
-        if cfg.worker_settings.n_parallel_bursts > 1
-        else utils.DummyProcessPoolExecutor
+        ProcessPoolExecutor if num_parallel > 1 else utils.DummyProcessPoolExecutor
     )
     mw = cfg.worker_settings.n_parallel_bursts
     ctx = mp.get_context("spawn")
@@ -268,11 +259,15 @@ def run(
             condition_file=stitched_temp_coh_file,
             condition=CallFunc.MAX,
             output_dir=ts_opts._directory,
+            method=timeseries.InversionMethod(ts_opts.method),
             run_velocity=ts_opts.run_velocity,
             velocity_file=ts_opts._velocity_file,
             correlation_threshold=ts_opts.correlation_threshold,
+            num_threads=ts_opts.num_parallel_blocks,
             # TODO: do i care to configure block shape, or num threads from somewhere?
             # num_threads=cfg.worker_settings....?
+            wavelength=cfg.input_options.wavelength,
+            add_overviews=cfg.output_options.add_overviews,
         )
 
     else:
@@ -312,7 +307,7 @@ def run(
                 "DEM file is not given, skip estimating tropospheric corrections."
             )
         else:
-            if cfg.correction_options.troposphere_files is not None:
+            if cfg.correction_options.troposphere_files:
                 from dolphin.atmosphere import estimate_tropospheric_delay
 
                 assert timeseries_paths is not None

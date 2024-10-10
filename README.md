@@ -15,7 +15,7 @@
 [github-discussions-link]:  https://github.com/isce-framework/dolphin/discussions
 <!-- prettier-ignore-end -->
 
-High resolution wrapped phase estimation for InSAR using combined PS/DS processing.
+High resolution wrapped phase estimation for Interferometric Synthetic Aperture Radar (InSAR) using combined persistent scatterer (PS) and distributed scatterer (DS) processing.
 
 <!-- DeformatiOn Land surface Products in High resolution using INsar -->
 
@@ -80,7 +80,7 @@ dolphin config --slc-files /path/to/slcs/*tif
 dolphin run dolphin_config.yaml
 ```
 
-The `config` command creates a YAML file (by default `dolphin_config.yaml` in the current directory). If you'd like to see an empty YAML with all defaults filled in, you can run `dolphin config --print-empty`
+The `config` command creates a YAML file (by default `dolphin_config.yaml` in the current directory). If you'd like to see an empty YAML with all defaults filled in, you can run `dolphin config --print-empty`, which creates a [sample file like the one here](https://raw.githubusercontent.com/isce-framework/dolphin/refs/heads/main/docs/sample_dolphin_config.yaml)
 
 The only required inputs for the workflow are the paths to the coregistered SLC files (in either geographic or radar coordinates).
 If the SLC files are spread over multiple files, you can either
@@ -92,6 +92,16 @@ If the SLC files are spread over multiple files, you can either
 The full set of options is written to the configuration file; you can edit this file, or you can see which commonly tuned options by are changeable running `dolphin config --help`.
 
 See the [documentation](https://dolphin-insar.readthedocs.io/) for more details.
+
+## Building and running via Docker
+
+`dolphin` can also be run using Docker. You can use the one built on [Github](https://github.com/isce-framework/dolphin/pkgs/container/dolphin), or build it locally using the script
+
+```bash
+./docker/build-docker-image.sh
+```
+
+See `./docker/build-docker-image.sh --help` for more building options.
 
 ## License
 

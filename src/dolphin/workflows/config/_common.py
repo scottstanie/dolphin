@@ -4,12 +4,13 @@ import glob
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    NaiveDatetime,
     PrivateAttr,
     field_validator,
     model_validator,
@@ -75,13 +76,20 @@ class PhaseLinkingOptions(BaseModel, extra="forbid"):
         10, description="Size of the ministack for sequential estimator.", gt=1
     )
     max_num_compressed: int = Field(
-        5,
+        100,
         description=(
             "Maximum number of compressed images to use in sequential estimator."
             " If there are more ministacks than this, the earliest CCSLCs will be"
-            " left out of the later stacks."
+            " left out of the later stacks. "
         ),
         gt=0,
+    )
+    output_reference_idx: int = Field(
+        0,
+        description=(
+            "Index of input SLC to use for making phase linked interferograms after"
+            " EVD/EMI."
+        ),
     )
     half_window: HalfWindow = HalfWindow()
     use_evd: bool = Field(
@@ -103,6 +111,14 @@ class PhaseLinkingOptions(BaseModel, extra="forbid"):
         description="Significance level (probability of false alarm) for SHP tests.",
         gt=0.0,
         lt=1.0,
+    )
+    mask_input_ps: bool = Field(
+        False,
+        description=(
+            "If True, pixels labeled as PS will get set to NaN during phase linking to"
+            " avoid summing their phase. Default of False means that the SHP algorithm"
+            " will decide if a pixel should be included, regardless of its PS label."
+        ),
     )
     baseline_lag: Optional[int] = Field(
         None,
@@ -147,7 +163,6 @@ class InterferogramNetwork(BaseModel, extra="forbid"):
         ),
     )
 
-    # validation
     @model_validator(mode="after")
     def _check_zero_parameters(self) -> InterferogramNetwork:
         ref_idx = self.reference_idx
@@ -175,6 +190,9 @@ class TimeseriesOptions(BaseModel, extra="forbid"):
             " a single-reference network is used."
         ),
     )
+    method: Literal["L1", "L2"] = Field(
+        "L2", description="Norm to use during timeseries inversion."
+    )
     reference_point: Optional[tuple[int, int]] = Field(
         None,
         description=(
@@ -193,6 +211,17 @@ class TimeseriesOptions(BaseModel, extra="forbid"):
         description="Pixels with correlation below this value will be masked out.",
         ge=0.0,
         le=1.0,
+    )
+    block_shape: tuple[int, int] = Field(
+        (256, 256),
+        description=(
+            "Size (rows, columns) of blocks of data to load at a time. 3D dimsion is"
+            " number of interferograms (during inversion) and number of SLC dates"
+            " (during velocity fitting)"
+        ),
+    )
+    num_parallel_blocks: int = Field(
+        4, description="Number of parallel blocks to process at once."
     )
 
 
@@ -235,6 +264,14 @@ class InputOptions(BaseModel, extra="forbid"):
     cslc_date_fmt: str = Field(
         "%Y%m%d",
         description="Format of dates contained in CSLC filenames",
+    )
+    wavelength: Optional[float] = Field(
+        None,
+        description=(
+            "Radar wavelength (in meters) of the transmitted data. used to convert the"
+            " units in the rasters in `timeseries/` to from radians to meters. If None"
+            " and sensor is not recognized, outputs remain in radians."
+        ),
     )
 
 
@@ -287,6 +324,18 @@ class OutputOptions(BaseModel, extra="forbid"):
     overview_levels: list[int] = Field(
         [4, 8, 16, 32, 64],
         description="List of overview levels to create (if `add_overviews=True`).",
+    )
+    # Note: we use NaiveDatetime, since other datetime parsing results in Naive
+    # (no TzInfo) datetimes, which can't be compared to datetimes with timezones
+    extra_reference_date: Optional[NaiveDatetime] = Field(
+        None,
+        description=(
+            "Specify an extra reference datetime in UTC. Adding this lets you"
+            " to create and unwrap two single reference networks; the later resets at"
+            " the given date (e.g. for a large earthquake event). If passing strings,"
+            " formats accepted are YYYY-MM-DD[T]HH:MM[:SS[.ffffff]][Z or [±]HH[:]MM],"
+            " or YYYY-MM-DD"
+        ),
     )
 
     # validators

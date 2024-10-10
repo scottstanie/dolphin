@@ -153,7 +153,6 @@ def run(
     if len(phase_linked_slcs) > 0:
         logger.info(f"Skipping EVD step, {len(phase_linked_slcs)} files already exist")
         cor_file_list = sorted(pl_path.glob("2*.cor.tif"))
-        print(f"{cor_file_list = }")
         comp_slc_list = sorted(pl_path.glob("compressed*tif"))
         temp_coh_file = next(pl_path.glob("temporal_coherence*tif"))
         shp_count_file = next(pl_path.glob("shp_count*tif"))

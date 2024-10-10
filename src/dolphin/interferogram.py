@@ -403,7 +403,7 @@ class Network:
             )
         if self.reference_idx is not None:
             ifgs.extend(
-                Network._single_reference_network(self.slc_list, self.reference_idx)
+                Network.single_reference_network(self.slc_list, self.reference_idx)
             )
 
         if self.include_annual:
@@ -479,7 +479,7 @@ class Network:
         )
 
     @staticmethod
-    def _single_reference_network(
+    def single_reference_network(
         slc_list: Sequence[Filename], reference_idx=0
     ) -> list[IfgPairT]:
         """Form a list of single-reference interferograms."""

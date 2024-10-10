@@ -343,11 +343,12 @@ def run_cpl(
     else:
         shp_counts = jnp.sum(neighbor_arrays, axis=(-2, -1))
 
+    # TODO: Do I want to avoid the 1s on the diagonal? Or let it inflate the mean?
     avg_coh_per_date = jnp.abs(C_arrays).mean(axis=-1).astype("float16")
     # If requested, average the Cov matrix at each row for reference selection
     # TODO: this shouldn't just be a direct argmax, but rather weighted argmax
     # avg_coh_per_date = jnp.abs(C_arrays).mean(axis=3).astype("float16")
-    avg_coh = np.argmax(avg_coh_per_date, axis=2) if calc_average_coh else None
+    avg_coh = np.argmax(avg_coh_per_date, axis=-1) if calc_average_coh else None
     cor_images = jnp.moveaxis(avg_coh_per_date, -1, 0) if save_cor_images else None
 
     return PhaseLinkOutput(

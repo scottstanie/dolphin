@@ -126,8 +126,6 @@ def run_wrapped_phase_sequential(
         ) = _get_outputs_from_folder(cur_output_folder)
         output_slc_files.append(cur_output_files)
         output_cor_files.append(out_cor_files)
-        print(output_cor_files)
-        print("??????")
         temp_coh_files.append(temp_coh_file)
         shp_count_files.append(shp_count_file)
 
@@ -154,7 +152,7 @@ def run_wrapped_phase_sequential(
         out_pl_slcs.append(output_folder / path.name)
 
     out_cors = []
-    for path in all_cor_files:
+    for path in all_cor_files[1:]:
         path.rename(output_folder / path.name)
         out_cors.append(output_folder / path.name)
 

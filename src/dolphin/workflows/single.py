@@ -444,6 +444,6 @@ def setup_output_folder(
             strides=strides,
             nodata=nodata,
         )
-        cor_files.append(output_path)
+        cor_files.append(cor_output_path)
 
     return phase_linked_slc_files, cor_files

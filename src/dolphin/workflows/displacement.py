@@ -65,6 +65,7 @@ def run(
         cfg.log_file = cfg.work_directory / "dolphin.log"
     # Set the logging level for all `dolphin.` modules
     setup_logging(debug=debug, filename=cfg.log_file)
+    setup_logging(logger_name="spurt", debug=debug, filename=cfg.log_file)
     # TODO: need to pass the cfg filename for the logger
     logger.debug(cfg.model_dump())
 

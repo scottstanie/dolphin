@@ -1025,12 +1025,20 @@ def invert_unw_network(
         # subtract the reference, convert to numpy
         stack = (stack - ref_data).filled(0)
 
+        TWOPI = 2 * np.pi
+        mod_2pi_image = np.mod(np.pi + stack, TWOPI) - np.pi
+        re_wrapped = np.round(mod_2pi_image, 4)
+        ambiguities = np.round((stack - re_wrapped) / (TWOPI), 3)
+
         # TODO: do i want to write residuals too? Do i need
         # to have multiple writers then, or a StackWriter?
         if method.upper() == "L1":
-            phases = invert_stack_l1(A, stack)[0]
+            solved_ambs = invert_stack_l1(A, ambiguities)[0]
         else:
-            phases = invert_stack(A, stack, weights, missing_data_flags)[0]
+            solved_ambs = invert_stack(A, ambiguities, weights, missing_data_flags)[0]
+        # Convert these ambiguities back into unwrapped phase
+        # WRONG shape, need to make the interferograms to match the date outputs...
+        phases = mod_2pi_image + solved_ambs * TWOPI
         # Convert to meters, with LOS convention:
         out_displacement = constant * np.asarray(phases)
         # Set the masked pixels to be nodata in the output

@@ -1,3 +1,11 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "matplotlib",
+#   "numpy",
+#   "dolphin"
+# ]
+# ///
 from __future__ import annotations
 
 import argparse

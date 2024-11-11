@@ -1,4 +1,17 @@
 #!/usr/bin/env python
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "click",
+#   "matplotlib",
+#   "rioxarray",
+#   "dask",
+#   "scipy",
+#   "cartopy",
+#   "opera-utils",
+#   "opera-utils",
+# ]
+# ///
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
@@ -12,14 +25,12 @@ from cartopy.io import img_tiles
 from matplotlib.gridspec import GridSpec
 from opera_utils import get_dates
 
-from dolphin._types import Bbox
-
 
 def plot_insar_timeseries(
     velocity_da: xr.DataArray,
     timeseries_da: xr.DataArray,
-    poi: Union[Tuple[float, float], None] = None,
-    poi_is_latlon: bool = True,
+    pixel_lonlat: Union[Tuple[float, float], None] = None,
+    pixel_rowcol: Union[Tuple[int, int], None] = None,
     reference_point: Union[Tuple[int, int], None] = None,
     mask_zeros: bool = True,
     tile_zoom_level: int = 9,
@@ -35,11 +46,10 @@ def plot_insar_timeseries(
         Velocity data in EPSG:4326 (lat/lon coordinates)
     timeseries_da : xr.DataArray
         Time series data in EPSG:4326
-    poi : tuple, optional
-        Point of interest as (lat, lon) if poi_is_latlon=True,
-        or (row, col) if poi_is_latlon=False
-    poi_is_latlon : bool, default=True
-        Whether poi coordinates are in lat/lon or row/col
+    pixel_lonlat : tuple, optional
+        Point of interest as (lat, lon)
+    pixel_rowcol : tuple, optional
+        Point of interest as (row, col)
     reference_point : tuple, optional
         Reference point as (row, col)
     mask_zeros : bool, default=True
@@ -75,6 +85,7 @@ def plot_insar_timeseries(
         row, col = reference_point
         ref_lat = timeseries_da.y[row].item()
         ref_lon = timeseries_da.x[col].item()
+        print(f"{ref_lat = }, {ref_lon = }")
         # ref_timeseries = timeseries_da.isel[row, col]
         ax_map.plot(
             ref_lon,
@@ -83,8 +94,8 @@ def plot_insar_timeseries(
             markersize=10,
             transform=ccrs.PlateCarree(),
             label="Reference",
+            zorder=10,
         )
-        ax_map.legend()
 
     im = ax_map.imshow(
         velocity_plot,
@@ -117,21 +128,24 @@ def plot_insar_timeseries(
     ax_ts = fig.add_subplot(gs[1])
 
     # Extract time series at point of interest
-    if poi is not None:
-        if poi_is_latlon:
-            lon, lat = poi
-            ts_data = timeseries_da.sel(y=lat, x=lon, method="nearest")
-        else:
-            row, col = poi
-            lat = timeseries_da.y[row].item()
-            lon = timeseries_da.x[col].item()
-            ts_data = timeseries_da.isel(y=row, x=col)
+    ts_data = None
+    if pixel_lonlat is not None:
+        lon, lat = pixel_lonlat
+        ts_data = timeseries_da.sel(y=lat, x=lon, method="nearest")
+    elif pixel_rowcol is not None:
+        row, col = pixel_rowcol
+        ts_data = timeseries_da.isel(y=row, x=col)
+        # Store for later
+        lat = timeseries_da.y[row].item()
+        lon = timeseries_da.x[col].item()
 
+    if ts_data is not None:
         # Plot time series
         dates = pd.to_datetime(timeseries_da.time.values)
         ax_ts.plot(dates, ts_data, "o-", markersize=4)
 
         # Mark point on map
+        print(f"{lon = }, {lat = }")
         ax_map.plot(
             lon,
             lat,
@@ -139,8 +153,10 @@ def plot_insar_timeseries(
             markersize=10,
             transform=ccrs.PlateCarree(),
             label="Point of Interest",
+            zorder=10,
         )
 
+    ax_map.legend()
     # Format time series plot
     ax_ts.set_xlabel("Date")
     try:
@@ -180,23 +196,26 @@ def _prep(ds):
     help="Path to velocity TIF file (default: timeseries_dir/velocity.tif)",
 )
 @click.option(
-    "-p",
-    "--poi",
+    "--pixel-lonlat",
     type=float,
     nargs=2,
-    help="Point of interest as 'lat lon' or 'lat,lon'",
+    help="Point of interest as `lon lat`",
 )
 @click.option(
-    "--poi-rowcol",
-    is_flag=True,
-    help="Interpret POI coordinates as row/col instead of lat/lon",
+    "--pixel-rowcol",
+    type=float,
+    nargs=2,
+    help="Point of interest as `row col`",
 )
 @click.option(
     "-r",
-    "--reference-point",
+    "--reference-lonlat",
     type=float,
     nargs=2,
-    help="Reference point as 'row col' or 'row,col'",
+    help=(
+        "Optional reference point as `lon lat`. If None, uses"
+        " `timeseries/reference_points.txt`."
+    ),
 )
 @click.option(
     "-o",
@@ -232,9 +251,9 @@ def _prep(ds):
 def main(
     timeseries_dir: Path,
     velocity_file: Path,
-    poi: Tuple[float, float],
-    poi_rowcol: bool,
-    reference_point: Tuple[float, float],
+    pixel_lonlat: Tuple[float, float],
+    pixel_rowcol: Tuple[int, int],
+    reference_lonlat: Tuple[float, float] | None,
     output_file: Path,
     figsize: Tuple[float, float],
     zoom_level: int,
@@ -251,17 +270,17 @@ def main(
 
     \b
     # Basic usage with lat/lon point of interest
-    insar_plot timeseries/ -p -156 19.4
+    insar_plot timeseries/ --pixel-lonlat -156 19.4
 
     \b
     # With row/col point of interest
-    insar_plot timeseries/ --poi 100 200 --poi-rowcol
+    insar_plot timeseries/ --pixel-rowcol 100 200
 
     \b
     # Full example
     insar_plot timeseries/ \\
         -v timeseries/velocity.tif \\
-        -p -156 19.4 \\
+        --pixel-lonlat -156 19.4 \\
         -r 385 1180 \\
         -o figure.png \\
         --figsize 12 8 \\
@@ -296,23 +315,26 @@ def main(
     ts_latlon = ds.rio.reproject("EPSG:4326")
 
     # Handle reference point from file if needed
-    from dolphin.timeseries import _read_reference_point
-
-    if not reference_point:
+    if not reference_lonlat:
         try:
-            reference_point = _read_reference_point(
-                timeseries_dir / "reference_point.txt"
-            )
+            ref_path = timeseries_dir / "reference_point.txt"
+            ref_text = [int(n) for n in ref_path.read_text().split(",")][:2]
+            reference_point: tuple[int, int] = ref_text[0], ref_text[1]
         except (ValueError, OSError) as e:
-            raise click.UsageError(f"Error reading reference point file: {e}")
+            raise click.UsageError(f"Error reading reference point file: {e}") from e
+    else:
+        lon, lat = reference_lonlat
+        ref_row = velocity_latlon.sel(x=lon, method="nearest").item()
+        ref_col = velocity_latlon.sel(y=lat, method="nearest").item()
+        reference_point = (ref_row, ref_col)
 
     click.echo("Creating plot...")
 
     fig, (ax_map, ax_ts) = plot_insar_timeseries(
         velocity_da=velocity_latlon,
         timeseries_da=ts_latlon.displacement,
-        poi=poi,
-        poi_is_latlon=not poi_rowcol,
+        pixel_lonlat=pixel_lonlat,
+        pixel_rowcol=pixel_rowcol,
         reference_point=reference_point,
         mask_zeros=mask_zeros,
         tile_zoom_level=zoom_level,
@@ -328,7 +350,9 @@ def main(
         plt.show()
 
 
-def _padded_extent(bbox: Bbox, pad_pct: float) -> Bbox:
+def _padded_extent(
+    bbox: tuple[float, float, float, float], pad_pct: float
+) -> tuple[float, float, float, float]:
     """Return a padded extent, given a bbox and a percentage of padding."""
     left, bot, right, top = bbox
     padx = pad_pct * (right - left) / 2

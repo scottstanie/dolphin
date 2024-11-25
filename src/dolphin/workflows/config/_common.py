@@ -4,7 +4,7 @@ import glob
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from pydantic import (
     BaseModel,
@@ -21,7 +21,7 @@ from dolphin._types import Bbox
 from dolphin.io import DEFAULT_HDF5_OPTIONS, DEFAULT_TIFF_OPTIONS
 from dolphin.stack import CompressedSlcPlan
 
-from ._enums import ShpMethod
+from ._enums import InversionMethod, ShpMethod
 from ._yaml_model import YamlModel
 
 logger = logging.getLogger(__name__)
@@ -211,8 +211,8 @@ class TimeseriesOptions(BaseModel, extra="forbid"):
             " a single-reference network is used."
         ),
     )
-    method: Literal["L1", "L2"] = Field(
-        "L2", description="Norm to use during timeseries inversion."
+    method: InversionMethod = Field(
+        "L1", description="Norm to use during timeseries inversion."
     )
     reference_point: Optional[tuple[int, int]] = Field(
         None,
@@ -236,8 +236,8 @@ class TimeseriesOptions(BaseModel, extra="forbid"):
     block_shape: tuple[int, int] = Field(
         (256, 256),
         description=(
-            "Size (rows, columns) of blocks of data to load at a time. 3D dimsion is"
-            " number of interferograms (during inversion) and number of SLC dates"
+            "Size (rows, columns) of blocks of data to load at a time. Third dimension "
+            " is the number of interferograms (during inversion) or number of SLC dates"
             " (during velocity fitting)"
         ),
     )
@@ -429,7 +429,7 @@ class WorkflowBase(YamlModel):
     # Paths to input/output files
     input_options: InputOptions = Field(default_factory=InputOptions)
 
-    mask_file: Optional[Path] = Field(
+    mask_file: Optional[str] = Field(
         None,
         description=(
             "Mask file used to ignore low correlation/bad data (e.g water mask)."

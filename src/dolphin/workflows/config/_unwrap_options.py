@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -11,7 +10,7 @@ from pydantic import (
     field_validator,
 )
 
-from ._enums import UnwrapMethod
+from ._enums import CostMode, InitMethod, SpurtCostType, UnwrapMethod
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +104,13 @@ class SnaphuOptions(BaseModel, extra="forbid"):
         1,
         description="Number of tiles to unwrap in parallel for each interferogram.",
     )
-    init_method: Literal["mcf", "mst"] = Field(
-        "mcf",
+
+    init_method: InitMethod = Field(
+        InitMethod.MCF,
         description="Initialization method for SNAPHU.",
     )
-    cost: Literal["defo", "smooth"] = Field(
-        "smooth",
+    cost: CostMode = Field(
+        CostMode.SMOOTH,
         description="Statistical cost mode method for SNAPHU.",
     )
     single_tile_reoptimize: bool = Field(
@@ -134,12 +134,12 @@ class TophuOptions(BaseModel, extra="forbid"):
         (1, 1),
         description="Extra multilook factor to use for the coarse unwrap.",
     )
-    init_method: Literal["mcf", "mst"] = Field(
-        "mcf",
+    init_method: InitMethod = Field(
+        InitMethod.MCF,
         description="Initialization method for SNAPHU.",
     )
-    cost: Literal["defo", "smooth"] = Field(
-        "smooth",
+    cost: CostMode = Field(
+        CostMode.SMOOTH,
         description="Statistical cost mode method for SNAPHU.",
     )
 
@@ -196,8 +196,9 @@ class SpurtSolverSettings(BaseModel):
         ),
         gt=0,
     )
-    t_cost_type: Literal["constant", "distance", "centroid"] = Field(
-        default="constant",
+
+    t_cost_type: SpurtCostType = Field(
+        default=SpurtCostType.CONSTANT,
         description="Temporal unwrapping costs.",
     )
     t_cost_scale: float = Field(
@@ -205,8 +206,10 @@ class SpurtSolverSettings(BaseModel):
         description="Scale factor used to compute edge costs for temporal unwrapping.",
         gt=0.0,
     )
-    s_cost_type: Literal["constant", "distance", "centroid"] = Field(
-        default="constant", description="Spatial unwrapping costs.", alias="s_cost_type"
+    s_cost_type: SpurtCostType = Field(
+        default=SpurtCostType.CONSTANT,
+        description="Spatial unwrapping costs.",
+        alias="s_cost_type",
     )
     s_cost_scale: float = Field(
         default=100.0,
@@ -225,10 +228,10 @@ class SpurtMergerSettings(BaseModel):
         default=25,
         description="Minimum number of overlap pixels to be considered valid.",
     )
-    method: Literal["dirichlet"] = Field(
-        default="dirichlet", description="Currently, only 'dirichlet' is supported."
+    method: str = Field(
+        "dirichlet", description="Currently, only 'dirichlet' is supported."
     )
-    bulk_method: Literal["integer", "L2"] = Field(
+    bulk_method: str = Field(
         default="L2", description="Method used to estimate bulk offset between tiles."
     )
     num_parallel_ifgs: int = Field(

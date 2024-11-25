@@ -10,7 +10,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    NaiveDatetime,
     PrivateAttr,
     field_validator,
     model_validator,
@@ -296,20 +295,13 @@ class InputOptions(BaseModel, extra="forbid"):
     )
 
 
-class OutputOptions(BaseModel, extra="forbid"):
+class OutputOptions(BaseModel, extra="allow"):
     """Options for the output size/format/compressions."""
 
-    output_resolution: Optional[dict[str, int]] = Field(
-        # {"x": 20, "y": 20},
-        # TODO: how to get a blank "x" and "y" in the schema printed instead of nothing?
-        None,
-        description="Output (x, y) resolution (in units of input data)",
-    )
     strides: dict[str, int] = Field(
         {"x": 1, "y": 1},
         description=(
-            "Alternative to specifying output resolution: Specify the (x, y) strides"
-            " (decimation factor) to perform while processing input. For example,"
+            "Specify the (x, y) strides  (decimation factor) to perform while processing input. For example,"
             " strides of [4, 2] would turn an input resolution of [5, 10] into an"
             " output resolution of [20, 20]."
         ),
@@ -358,7 +350,7 @@ class OutputOptions(BaseModel, extra="forbid"):
     )
     # Note: we use NaiveDatetime, since other datetime parsing results in Naive
     # (no TzInfo) datetimes, which can't be compared to datetimes with timezones
-    extra_reference_date: Optional[NaiveDatetime] = Field(
+    extra_reference_date: Optional[datetime] = Field(
         None,
         description=(
             "Specify an extra reference datetime in UTC. Adding this lets you"
@@ -388,39 +380,12 @@ class OutputOptions(BaseModel, extra="forbid"):
             return Bbox(*bounds)
         return bounds
 
-    @field_validator("strides")
+    @field_validator("extra_reference_date", mode="after")
     @classmethod
-    def _check_strides_against_res(cls, strides, info):
-        """Compute the output resolution from the strides."""
-        resolution = info.data.get("output_resolution")
-        if strides is not None and resolution is not None:
-            msg = "Cannot specify both strides and output_resolution."
-            raise ValueError(msg)
-        elif strides is None and resolution is None:
-            msg = "Must specify either strides or output_resolution."
-            raise ValueError(msg)
-
-        # Check that the dict has the correct keys
-        if strides is not None:
-            if set(strides.keys()) != {"x", "y"}:
-                msg = "Strides must be a dict with keys 'x' and 'y'"
-                raise ValueError(msg)
-            # and that the strides are integers
-            if not all(isinstance(v, int) for v in strides.values()):
-                msg = "Strides must be integers"
-                raise ValueError(msg)
-        if resolution is not None:
-            if set(resolution.keys()) != {"x", "y"}:
-                msg = "Resolution must be a dict with keys 'x' and 'y'"
-                raise ValueError(msg)
-            # and that the resolution is valid, > 0. Can be int or float
-            if any(v <= 0 for v in resolution.values()):
-                msg = "Resolutions must be > 0"
-                raise ValueError(msg)
-            # TODO: compute strides from resolution
-            msg = "output_resolution not yet implemented. Use `strides`."
-            raise NotImplementedError(msg)
-        return strides
+    def _strip_tz(cls, extra_reference_date):
+        if extra_reference_date is not None:
+            return extra_reference_date.replace(tzinfo=None)
+        return extra_reference_date
 
 
 class WorkflowBase(YamlModel):

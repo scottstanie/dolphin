@@ -49,7 +49,6 @@ cslc_file_list: []
 output_options:
   # Output (x, y) resolution (in units of input data).
   #   Type: object | null.
-  output_resolution:
   # Alternative to specifying output resolution: Specify the (x, y) strides (decimation
   #   factor) to perform while processing input. For example, strides of [4, 2] would turn an
   #   input resolution of [5, 10] into an output resolution of [20, 20].

@@ -141,3 +141,58 @@ def _resize(image: ArrayLike, output_shape: tuple[int, int]):
     # Translate modes used by np.pad to those used by scipy.ndimage
     zoom_factors = [1 / f for f in factors]
     return ndimage.zoom(image, zoom_factors, grid_mode=True, mode="grid-constant")
+
+
+def interpolate_masked_gaps2(
+    unw: NDArray[np.float64], ifg: NDArray[np.complex64]
+) -> None:
+    """Perform phase unwrapping using nearest neighbor interpolation of ambiguities.
+
+    Overwrites `unw`'s masked pixels with the interpolated values.
+
+    This function takes an input unwrapped phase array containing NaNs at masked pixel.
+    It calculates the phase ambiguity, K, at the attempted unwrapped pixels, then
+    interpolates the ambiguities to fill the gaps.
+    The masked pixels get the value of the original wrapped phase + 2pi*K.
+
+    Parameters
+    ----------
+    unw : NDArray[np.float]
+        Input unwrapped phase array with NaN values for masked areas.
+    ifg : NDArray[np.complex64]
+        Corresponding wrapped interferogram phase
+
+    Returns
+    -------
+    np.ndarray
+        Fully unwrapped phase array with interpolated values for previously
+        masked areas.
+
+    """
+    # Create masks for valid areas
+    ifg_valid = ~np.isnan(ifg) & (ifg != 0)
+    unw_valid = ~np.isnan(unw)
+
+    # Identify areas to interpolate: where ifg is valid but unw is not
+    interpolate_mask = ifg_valid & ~unw_valid
+
+    # If there's nothing to interpolate, we're done
+    if not np.any(interpolate_mask):
+        return
+
+    # Calculate ambiguities for valid unwrapped pixels
+    valid_pixels = ifg_valid & unw_valid
+    ambiguities = get_2pi_ambiguities(unw[valid_pixels])
+
+    # Get coordinates for valid pixels and pixels to interpolate
+    valid_coords = np.array(np.where(valid_pixels)).T
+    interp_coords = np.array(np.where(interpolate_mask)).T
+
+    # Create and apply the interpolator
+    interpolator = NearestNDInterpolator(valid_coords, ambiguities)
+    interpolated_ambiguities = interpolator(interp_coords)
+
+    # Apply interpolated ambiguities to the wrapped phase
+    unw[interpolate_mask] = np.angle(ifg[interpolate_mask]) + (
+        interpolated_ambiguities * TWOPI
+    )

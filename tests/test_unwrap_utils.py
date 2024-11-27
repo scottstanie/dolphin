@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from dolphin import io
-from dolphin.unwrap import _utils
+from dolphin.unwrap import _utils, _post_process
 
 # Dataset has no geotransform, gcps, or rpcs. The identity matrix will be returned.
 pytestmark = pytest.mark.filterwarnings(
@@ -95,3 +95,18 @@ def test_set_nodata_values(corr_raster):
         a = src.read(1)
         assert np.all(a[:20] == -2)
         assert np.all(a[:, :20] == -2)
+
+
+class PostProcess:
+    def test_interpolate_masked_gaps():
+        pass
+
+    unw = np.ones((100, 1)) * np.linspace(0, 20, 100).reshape(1, 100)
+    ifg = np.exp(1j * unw)
+    # ifg = np.exp(1j * 10 * np.random.randn(64, 64))
+    mask = np.random.rand(100, 100) < 0.2
+    unw_masked = unw.copy()
+    unw_masked[mask] = np.nan
+
+    _post_process.interpolate_masked_gaps(unw_masked, ifg)
+    np.testing.assert_array_equal(unw[2:-2, 2:-2], unw_masked[2:-2, 2:-2])

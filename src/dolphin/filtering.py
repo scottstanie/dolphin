@@ -68,11 +68,12 @@ def filter_long_wavelength(
     plane = fit_ramp_plane(unw0, total_valid_mask)
     # Remove the plane, setting to 0 where we had no data for the plane fit:
     unw_ifg_interp = np.where(total_valid_mask, unw0, plane)
+    del unw0, plane
 
     # Find the filter `sigma` which gives the correct cutoff in meters
     sigma = _compute_filter_sigma(wavelength_cutoff, pixel_spacing, cutoff_value=0.5)
 
-    if sigma > unw0.shape[0] or sigma > unw0.shape[0]:
+    if sigma > rows or sigma > cols:
         msg = f"{wavelength_cutoff = } too large for image."
         msg += f"Shape = {(rows, cols)}, and {pixel_spacing = }"
         raise ValueError(msg)
@@ -83,20 +84,20 @@ def filter_long_wavelength(
     pad_rows = pad_cols = int(3 * sigma)
     # See here for illustration of `mode="reflect"`
     # https://scikit-image.org/docs/stable/auto_examples/transform/plot_edge_modes.html#interpolation-edge-modes
-    padded = np.pad(
+    result = np.pad(
         unw_ifg_interp, ((pad_rows, pad_rows), (pad_cols, pad_cols)), mode="reflect"
     )
 
     # Apply Gaussian filter
-    result = fft.fft2(padded, workers=workers)
+    result = fft.fft2(result, workers=workers)
     result = ndimage.fourier_gaussian(result, sigma=sigma)
     # Make sure to only take the real part (ifft returns complex)
     result = fft.ifft2(result, workers=workers).real.astype(unwrapped_phase.dtype)
 
     # Crop back to original size
-    lowpass_filtered = result[pad_rows:-pad_rows, pad_cols:-pad_cols]
+    result = result[pad_rows:-pad_rows, pad_cols:-pad_cols]
 
-    filtered_ifg = unw_ifg_interp - lowpass_filtered * in_bounds_pixels
+    filtered_ifg = unw_ifg_interp - result * in_bounds_pixels
     if fill_value is not None:
         return np.where(total_valid_mask, filtered_ifg, fill_value)
     else:
@@ -128,28 +129,20 @@ def fit_ramp_plane(unw_ifg: ArrayLike, mask: ArrayLike) -> np.ndarray:
         2D array of the fitted ramp plane.
 
     """
-    # Extract data for non-NaN & masked pixels
-    Y = unw_ifg[mask]
-    Xdata = np.argwhere(mask)  # Get indices of non-NaN & masked pixels
+    # Extract coordinates of valid pixels
+    coords = np.argwhere(mask)
+    values = unw_ifg[mask]
 
-    # Include the intercept term (bias) in the model
-    X = np.c_[np.ones((len(Xdata))), Xdata]
+    # Build design matrix, include the intercept term (bias) in the model
+    X = np.column_stack((np.ones(len(coords)), coords))
 
-    # Compute the parameter vector theta using the least squares solution
-    theta = np.linalg.pinv(X.T @ X) @ X.T @ Y
+    # Solve least squares problem
+    theta = np.linalg.lstsq(X, values, rcond=None)[0]
 
     # Prepare grid for the entire image
     nrow, ncol = unw_ifg.shape
-    X1_, X2_ = np.mgrid[:nrow, :ncol]
-    X_ = np.hstack(
-        (np.reshape(X1_, (nrow * ncol, 1)), np.reshape(X2_, (nrow * ncol, 1)))
-    )
-    X_ = np.hstack((np.ones((nrow * ncol, 1)), X_))
-
-    # Compute the fitted plane
-    plane = np.reshape(X_ @ theta, (nrow, ncol))
-
-    return plane
+    y, x = np.ogrid[:nrow, :ncol]
+    return theta[0] + theta[1] * y + theta[2] * x
 
 
 def filter_rasters(

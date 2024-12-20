@@ -75,6 +75,7 @@ def run_phase_linking(
     avg_mag: ArrayLike | None = None,
     use_slc_amp: bool = False,
     calc_average_coh: bool = False,
+    use_weighted_temp_coh: bool = False,
     baseline_lag: Optional[int] = None,
 ) -> PhaseLinkOutput:
     """Estimate the linked phase for a stack of SLCs.
@@ -199,6 +200,7 @@ def run_phase_linking(
         reference_idx=reference_idx,
         neighbor_arrays=neighbor_arrays,
         calc_average_coh=calc_average_coh,
+        use_weighted_temp_coh=use_weighted_temp_coh,
         baseline_lag=baseline_lag,
     )
 
@@ -256,6 +258,7 @@ def run_cpl(
     reference_idx: int = 0,
     neighbor_arrays: Optional[np.ndarray] = None,
     calc_average_coh: bool = False,
+    use_weighted_temp_coh: bool = False,
     baseline_lag: Optional[int] = None,
 ) -> PhaseLinkOutput:
     """Run the Combined Phase Linking (CPL) algorithm.
@@ -339,9 +342,12 @@ def run_cpl(
         beta=beta,
         zero_correlation_threshold=zero_correlation_threshold,
         reference_idx=reference_idx,
+        use_weighted_temp_coh=use_weighted_temp_coh,
     )
     # Get the temporal coherence
-    temp_coh = metrics.estimate_temp_coh(cpx_phase, C_arrays)
+    temp_coh = metrics.estimate_temp_coh(
+        cpx_phase, C_arrays, weighted=use_weighted_temp_coh
+    )
 
     # Reshape the (rows, cols, nslcs) output to be same as input stack
     cpx_phase_reshaped = jnp.moveaxis(cpx_phase, -1, 0)
@@ -369,13 +375,16 @@ def run_cpl(
     )
 
 
-@partial(jit, static_argnames=("use_evd", "beta", "reference_idx"))
+@partial(
+    jit, static_argnames=("use_evd", "beta", "reference_idx", "use_weighted_temp_coh")
+)
 def process_coherence_matrices(
     C_arrays,
     use_evd: bool = False,
     beta: float = 0.0,
     zero_correlation_threshold: float = 0.0,
     reference_idx: int = 0,
+    use_weighted_temp_coh: bool = False,
 ) -> tuple[Array, Array, Array]:
     """Estimate the linked phase for a stack of coherence matrices.
 

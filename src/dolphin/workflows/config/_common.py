@@ -114,6 +114,10 @@ class PhaseLinkingOptions(BaseModel, extra="forbid"):
         ge=0.0,
         le=1.0,
     )
+    use_weighted_temp_coh: bool = Field(
+        False,
+        description="Use correlated-weighted metric for the output temporal coherence.",
+    )
     shp_method: ShpMethod = ShpMethod.GLRT
     shp_alpha: float = Field(
         0.001,

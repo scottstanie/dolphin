@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import shutil
 from itertools import chain
 from os import fspath
 from pathlib import Path
@@ -46,6 +47,7 @@ def run_wrapped_phase_sequential(
     use_evd: bool = False,
     beta: float = 0.00,
     zero_correlation_threshold: float = 0.0,
+    use_weighted_temp_coh: bool = False,
     similarity_nearest_n: int | None = None,
     compressed_slc_plan: CompressedSlcPlan = CompressedSlcPlan.ALWAYS_FIRST,
     max_num_compressed: int = 100,
@@ -125,6 +127,7 @@ def run_wrapped_phase_sequential(
                 use_evd=use_evd,
                 beta=beta,
                 zero_correlation_threshold=zero_correlation_threshold,
+                use_weighted_temp_coh=use_weighted_temp_coh,
                 mask_file=mask_file,
                 ps_mask_file=ps_mask_file,
                 amp_mean_file=amp_mean_file,
@@ -176,6 +179,9 @@ def run_wrapped_phase_sequential(
             num_threads=2,
             add_overviews=False,
         )
+        # Also create the average
+        avg_similarity_file = output_folder / f"similarity_average_{full_span}.tif"
+        _average_rasters(shp_count_files, avg_similarity_file, "Float32")
     else:
         output_similarity_file = similarity_files[0].rename(
             output_folder / similarity_files[0].name
@@ -209,9 +215,9 @@ def _get_outputs_from_folder(
 ) -> tuple[list[Path], Path, Path, Path, Path]:
     cur_output_files = sorted(output_folder.glob("2*.slc.tif"))
     cur_comp_slc_file = next(output_folder.glob("compressed_*"))
-    temp_coh_file = next(output_folder.glob("temporal_coherence_*"))
+    temp_coh_file = next(output_folder.glob("temporal_coherence*"))
     similarity_file = next(output_folder.glob("similarity*"))
-    shp_count_file = next(output_folder.glob("shp_counts_*"))
+    shp_count_file = next(output_folder.glob("shp_counts*"))
     # Currently ignoring to not stitch:
     # eigenvalues, estimator, avg_coh
     return (
@@ -225,7 +231,7 @@ def _get_outputs_from_folder(
 
 def _average_rasters(file_list: list[Path], outfile: Path, output_type: str):
     if len(file_list) == 1:
-        file_list[0].rename(outfile)
+        shutil.copy(file_list[0], outfile)
         return
 
     logger.info(f"Averaging {len(file_list)} files into {outfile}")

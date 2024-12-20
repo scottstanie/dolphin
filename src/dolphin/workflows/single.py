@@ -46,6 +46,7 @@ def run_wrapped_phase_single(
     beta: float = 0.00,
     zero_correlation_threshold: float = 0.0,
     use_evd: bool = False,
+    use_weighted_temp_coh: bool = False,
     mask_file: Optional[Filename] = None,
     ps_mask_file: Optional[Filename] = None,
     amp_mean_file: Optional[Filename] = None,
@@ -205,6 +206,7 @@ def run_wrapped_phase_single(
                 ps_mask=ps_mask[in_rows, in_cols],
                 neighbor_arrays=neighbor_arrays,
                 baseline_lag=baseline_lag,
+                use_weighted_temp_coh=use_weighted_temp_coh,
                 avg_mag=amp_mean[in_rows, in_cols] if amp_mean is not None else None,
             )
         except PhaseLinkRuntimeError as e:

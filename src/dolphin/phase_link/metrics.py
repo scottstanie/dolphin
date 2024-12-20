@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import jax.numpy as jnp
 from jax import Array, jit, vmap
 from jax.typing import ArrayLike
 
 
-@jit
-def estimate_temp_coh(cpx_phase: ArrayLike, C_arrays: ArrayLike) -> Array:
+@partial(jit, static_argnames=("weighted",))
+def estimate_temp_coh(
+    cpx_phase: ArrayLike, C_arrays: ArrayLike, weighted: bool = False
+) -> Array:
     """Estimate the temporal coherence for a block of solutions.
 
     Parameters
@@ -35,8 +39,12 @@ def estimate_temp_coh(cpx_phase: ArrayLike, C_arrays: ArrayLike) -> Array:
     if C_arrays.ndim == 2:
         C_arrays = C_arrays.reshape(1, 1, *C_arrays.shape)
 
-    _temp_coh_3d = vmap(estimate_temp_coh_single)
-    estimate_temp_coh = vmap(_temp_coh_3d)
+    if weighted:
+        _temp_coh_2d = vmap(estimate_weighted_temp_coh_single)
+    else:
+        _temp_coh_2d = vmap(estimate_temp_coh_single)
+
+    estimate_temp_coh = vmap(_temp_coh_2d)
     return estimate_temp_coh(cpx_phase, C_arrays)
 
 

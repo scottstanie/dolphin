@@ -151,6 +151,13 @@ def run(
     else:
         new_compressed_slc_reference_idx = None
 
+    # Figure out if we should compute phase similarity based on single-ref,
+    # or using nearest-3 interferograms
+    is_single_ref = _is_single_reference_network(
+        cfg.interferogram_network, cfg.unwrap_options.unwrap_method
+    )
+    similarity_nearest_n = None if is_single_ref else 3
+
     phase_linked_slcs = sorted(pl_path.glob("2*.tif"))
     if len(phase_linked_slcs) > 0:
         logger.info(f"Skipping EVD step, {len(phase_linked_slcs)} files already exist")
@@ -161,13 +168,6 @@ def run(
     else:
         logger.info(f"Running sequential EMI step in {pl_path}")
         kwargs = tqdm_kwargs | {"desc": f"Phase linking ({pl_path})"}
-
-        # Figure out if we should compute phase similarity based on single-ref,
-        # or using nearest-3 interferograms
-        is_single_ref = _is_single_reference_network(
-            cfg.interferogram_network, cfg.unwrap_options.unwrap_method
-        )
-        similarity_nearest_n = None if is_single_ref else 3
 
         # TODO: Need a good way to store the nslc attribute in the PS file...
         # If we pre-compute it from some big stack, we need to use that for SHP
@@ -190,6 +190,7 @@ def run(
             use_evd=cfg.phase_linking.use_evd,
             beta=cfg.phase_linking.beta,
             zero_correlation_threshold=cfg.phase_linking.zero_correlation_threshold,
+            use_weighted_temp_coh=cfg.phase_linking.use_weighted_temp_coh,
             mask_file=mask_filename,
             ps_mask_file=ps_output,
             amp_mean_file=cfg.ps_options._amp_mean_file,

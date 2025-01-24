@@ -75,6 +75,7 @@ def run_phase_linking(
     ps_mask: ArrayLike | None = None,
     use_max_ps: bool = True,
     neighbor_arrays: ArrayLike | None = None,
+    manual_corr_matrix: ArrayLike | None = None,
     avg_mag: ArrayLike | None = None,
     use_slc_amp: bool = False,
     calc_average_coh: bool = False,
@@ -201,6 +202,7 @@ def run_phase_linking(
         zero_correlation_threshold=zero_correlation_threshold,
         reference_idx=reference_idx,
         neighbor_arrays=neighbor_arrays,
+        manual_corr_matrix=manual_corr_matrix,
         calc_average_coh=calc_average_coh,
         baseline_lag=baseline_lag,
     )
@@ -258,6 +260,7 @@ def run_cpl(
     beta: float = 0,
     zero_correlation_threshold: float = 0.0,
     reference_idx: int = 0,
+    manual_corr_matrix: Optional[np.ndarray] = None,
     neighbor_arrays: Optional[np.ndarray] = None,
     calc_average_coh: bool = False,
     baseline_lag: Optional[int] = None,
@@ -344,6 +347,7 @@ def run_cpl(
         beta=beta,
         zero_correlation_threshold=zero_correlation_threshold,
         reference_idx=reference_idx,
+        manual_corr_matrix=manual_corr_matrix,
         num_looks=num_looks,
     )
     # Get the temporal coherence
@@ -379,11 +383,12 @@ def run_cpl(
 
 @partial(jit, static_argnames=("use_evd", "beta", "reference_idx"))
 def process_coherence_matrices(
-    C_arrays,
+    C_arrays: ArrayLike,
     use_evd: bool = False,
     beta: float = 0.0,
     zero_correlation_threshold: float = 0.0,
     reference_idx: int = 0,
+    manual_corr_matrix: ArrayLike | None = None,
     num_looks: int = 1,
 ) -> tuple[Array, Array, Array, Array]:
     """Estimate the linked phase for a stack of coherence matrices.
@@ -431,7 +436,12 @@ def process_coherence_matrices(
 
     evd_eig_vals, evd_eig_vecs = eigh_largest_stack(C_arrays * jnp.abs(C_arrays))
 
-    Gamma = jnp.abs(C_arrays)
+    if manual_corr_matrix is not None:
+        # Use the manual matrix
+        Gamma = manual_corr_matrix.astype(jnp.float32)
+    else:
+        # Use the absolute value of the coherence matrices
+        Gamma = jnp.abs(C_arrays)
 
     # Identity used for regularization and for solving
     Id = jnp.eye(n, dtype=Gamma.dtype)

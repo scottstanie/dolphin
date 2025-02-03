@@ -139,14 +139,14 @@ def run(
     condition_func = argmax_index if condition == CallFunc.MAX else argmin_index
     if reference_point == (-1, -1):
         logger.info("Selecting a reference point for unwrapped interferograms")
-        ref_point = select_reference_point(
+        ref_points = select_reference_points(
             condition_file=condition_file,
             output_dir=Path(output_dir),
             condition_func=condition_func,
             ccl_file_list=conncomp_paths,
         )
     else:
-        ref_point = ReferencePoint(row=reference_point[0], col=reference_point[1])
+        ref_points = [ReferencePoint(row=reference_point[0], col=reference_point[1])]
 
     ifg_date_pairs = [get_dates(f) for f in unwrapped_paths]
     sar_dates = sorted(set(flatten(ifg_date_pairs)))
@@ -168,7 +168,7 @@ def run(
         final_ts_paths = _convert_and_reference(
             unwrapped_paths,
             output_dir=output_dir,
-            reference_point=ref_point,
+            reference_point=ref_points,
             wavelength=wavelength,
         )
         final_residual_paths = None
@@ -177,7 +177,7 @@ def run(
         inverted_phase_paths, residual_paths = invert_unw_network(
             unw_file_list=unwrapped_paths,
             conncomp_file_list=conncomp_paths,
-            reference=ref_point,
+            reference_points=ref_points,
             output_dir=output_dir,
             block_shape=block_shape,
             num_threads=num_threads,
@@ -889,7 +889,7 @@ def create_temporal_average(
 
 def invert_unw_network(
     unw_file_list: Sequence[PathOrStr],
-    reference: ReferencePoint,
+    reference_points: Sequence[ReferencePoint],
     output_dir: PathOrStr,
     conncomp_file_list: Sequence[PathOrStr] | None = None,
     cor_file_list: Sequence[PathOrStr] | None = None,
@@ -907,8 +907,8 @@ def invert_unw_network(
     ----------
     unw_file_list : Sequence[PathOrStr]
         List of unwrapped phase files.
-    reference : ReferencePoint
-        The reference point to use for the inversion.
+    reference_points : Sequence[ReferencePoint]
+        The reference points to use for the inversion.
         The data vector from `unw_file_list` at this point will be subtracted
         from all other points when solving.
     output_dir : PathOrStr
@@ -1016,8 +1016,10 @@ def invert_unw_network(
         logger.info("Using unweighted unw inversion")
 
     # Get the reference point data
-    ref_row, ref_col = reference
-    ref_data = unw_reader[:, ref_row, ref_col].reshape(-1, 1, 1)
+    ref_data = np.ma.MaskedArray(np.zeros((unw_reader.shape[0], 1, 1)), mask=False)
+    for reference in reference_points:
+        ref_row, ref_col = reference
+        ref_data += unw_reader[:, ref_row, ref_col].reshape(-1, 1, 1)
     if ref_data.mask.sum() > 0:
         logger.warning(f"Masked data found at {ref_row}, {ref_col}.")
         logger.warning("Zeroing out reference pixel. Results may be wrong.")
@@ -1247,17 +1249,86 @@ def select_reference_point(
 
     # Cast to `int` to avoid having `np.int64` types
     ref_point = ReferencePoint(int(ref_row), int(ref_col))
-    logger.info(f"Saving {ref_point!r} to {output_file}")
-    _write_reference_point(output_file=output_file, ref_point=ref_point)
-    return ref_point
+    logger.info(f"Saving {ref_points} to {output_file}")
+    _write_reference_points(output_file=output_file, ref_points=ref_points)
+    return ref_points
 
 
-def _write_reference_point(output_file: Path, ref_point: ReferencePoint) -> None:
-    output_file.write_text(",".join(list(map(str, ref_point))))
+def pick_reference_point(
+    temp_coh: np.ma.MaskedArray, threshold: float = 0.98
+) -> tuple[int, int]:
+    """Pick a reference point from a masked temporal coherence array by.
+
+      1) Thresholding above 'threshold'.
+      2) Labeling connected components (3x3).
+      3) Selecting the largest connected component.
+      4) Computing center-of-mass of that component (float coords).
+      5) Choosing the pixel in the component closest to that center.
+
+    Parameters
+    ----------
+    temp_coh : np.ma.MaskedArray
+        Masked array of temporal coherence.
+    threshold : float
+        Minimum coherence value to include as a candidate pixel.
+
+    Returns
+    -------
+    ref_row : int
+        Row indices of the chosen reference pixel.
+    ref_col : int
+        Column indices of the chosen reference pixel.
+
+    Raises
+    ------
+    ValueError
+        If no pixels satisfy the threshold (no connected components).
+
+    """
+    # 1) Create a candidate mask: above threshold, and not masked (nodata).
+    candidate_mask = (temp_coh > threshold) & ~temp_coh.mask
+
+    # 2) Label the connected components of candidate pixels.
+    labeled, n_objects = ndimage.label(candidate_mask, structure=np.ones((3, 3)))
+    if n_objects == 0:
+        raise ValueError(f"No pixels above threshold={threshold}.")
+
+    # 3) Find the largest connected component.
+    label_counts = np.bincount(labeled.ravel())
+    label_counts[0] = 0  # ignore background label "0"
+    largest_label = label_counts.argmax()
+    largest_component = labeled == largest_label
+
+    # 4) Compute the float centroid of this largest component.
+    row_c, col_c = ndimage.center_of_mass(largest_component)
+
+    # 5) Among valid pixels in that region, find the one closest to the centroid.
+    rows, cols = np.nonzero(largest_component)
+    dist_sq = (rows - row_c) ** 2 + (cols - col_c) ** 2
+    i_min = dist_sq.argmin()
+    ref_row, ref_col = rows[i_min], cols[i_min]
+
+    return int(ref_row), int(ref_col)
 
 
-def _read_reference_point(output_file: Path):
-    return ReferencePoint(*[int(n) for n in output_file.read_text().split(",")])
+def _write_reference_points(
+    output_file: Path, ref_points: Sequence[ReferencePoint]
+) -> None:
+    out = ""
+    for ref in ref_points:
+        out += f"{ref.row},{ref.col}\n"
+
+    output_file.write_text(out)
+
+    # output_file.write_text(",".join(list(map(str, ref_point))))
+
+
+def _read_reference_points(output_file: Path) -> list[ReferencePoint]:
+    out = []
+    for line in output_file.read_text().splitlines():
+        out.append(ReferencePoint(*[int(n) for n in line.split(",")]))
+    return out
+    # return ReferencePoint(*[int(n) for n in output_file.read_text().split(",")])
 
 
 def _get_largest_conncomp_mask(

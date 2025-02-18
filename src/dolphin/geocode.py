@@ -1,8 +1,4 @@
-"""Geocode a swath file from ISCE2 using latitude and longitude files.
-
-This module defines a function that builds a temporary VRT with geolocation metadata and
-then uses GDAL Warp to reproject (geocode) the swath file.
-"""
+"""Geocode a swath file from ISCE2 using latitude and longitude files."""
 
 from __future__ import annotations
 

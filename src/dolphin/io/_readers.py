@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Generator,
+    Literal,
     Optional,
     Protocol,
     Sequence,
@@ -726,6 +727,7 @@ class VRTStack(StackReader):
         subdataset: Optional[str] = None,
         sort_files: bool = True,
         file_date_fmt: str = "%Y%m%d",
+        driver: Literal["NETCDF", "HDF5"] = "NETCDF",
         write_file: bool = True,
         fail_on_overwrite: bool = False,
         skip_size_check: bool = False,
@@ -766,6 +768,7 @@ class VRTStack(StackReader):
         self.outfile = Path(outfile).resolve()
         # Assumes that all files use the same subdataset (if NetCDF)
         self.subdataset = subdataset
+        self.driver = driver
 
         if not skip_size_check:
             _assert_images_same_size(self._gdal_file_strings)
@@ -851,7 +854,9 @@ class VRTStack(StackReader):
             if isinstance(f, S3Path):
                 out.append(f.to_gdal())
             else:
-                out.append(io.format_nc_filename(f, self.subdataset))
+                out.append(
+                    io.format_nc_filename(f, self.subdataset, driver=self.driver)
+                )
         return out
 
     def __fspath__(self):

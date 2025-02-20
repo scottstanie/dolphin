@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass
 from os import fspath
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence, Union
+from typing import Any, Literal, Mapping, Optional, Sequence, Union
 
 import h5py
 import numpy as np
@@ -194,7 +194,11 @@ def load_gdal(
         return np.ma.masked_equal(out, nd)
 
 
-def format_nc_filename(filename: Filename, ds_name: Optional[str] = None) -> str:
+def format_nc_filename(
+    filename: Filename,
+    ds_name: Optional[str] = None,
+    driver: Literal["NETCDF", "HDF5"] = "NETCDF",
+) -> str:
     """Format an HDF5/NetCDF filename with dataset for reading using GDAL.
 
     If `filename` is already formatted, or if `filename` is not an HDF5/NetCDF
@@ -206,6 +210,9 @@ def format_nc_filename(filename: Filename, ds_name: Optional[str] = None) -> str
         Filename to format.
     ds_name : str, optional
         Dataset name to use. If not provided for a .h5 or .nc file, an error is raised.
+    driver : str, choices = {"NETCDF", "HDF5"}
+        GDAL Driver to use.
+        Default is "NETCDF".
 
     Returns
     -------
@@ -231,7 +238,7 @@ def format_nc_filename(filename: Filename, ds_name: Optional[str] = None) -> str
         msg = "Must provide dataset name for HDF5/NetCDF files"
         raise ValueError(msg)
 
-    return f'NETCDF:"{filename}":"//{ds_name.lstrip("/")}"'
+    return f'{driver}:"{filename}":"//{ds_name.lstrip("/")}"'
 
 
 def copy_projection(src_file: Filename, dst_file: Filename) -> None:
@@ -667,13 +674,13 @@ def write_arr(
         if arr.ndim == 2:
             arr = arr[np.newaxis, ...]
         for i in range(fi.nbands):
-            logger.debug(f"Writing band {i+1}/{fi.nbands}")
+            logger.debug(f"Writing band {i + 1}/{fi.nbands}")
             bnd = ds_out.GetRasterBand(i + 1)
             bnd.WriteArray(arr[i])
 
     # Set the nodata/units/description for each band
     for i in range(fi.nbands):
-        logger.debug(f"Setting nodata for band {i+1}/{fi.nbands}")
+        logger.debug(f"Setting nodata for band {i + 1}/{fi.nbands}")
         bnd = ds_out.GetRasterBand(i + 1)
         # Note: right now we're assuming the nodata/units/description
         if fi.nodata is not None:

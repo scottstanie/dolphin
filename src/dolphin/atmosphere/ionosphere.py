@@ -210,6 +210,81 @@ def estimate_ionospheric_delay(
     return output_paths
 
 
+from dolphin.constants import SENTINEL_1_FREQUENCY
+
+
+def get_one(
+    inc_angle_file,
+    reference_time,
+    secondary_time,
+    reference_tec_file,
+    secondary_tec_file,
+    freq=SENTINEL_1_FREQUENCY,
+):
+    from scipy.ndimage import zoom
+
+    epsg = io.get_raster_crs(inc_angle_file).to_epsg()
+    bounds = io.get_raster_bounds(inc_angle_file)
+
+    if epsg != 4326:
+        left, bottom, right, top = transform_bounds(
+            CRS.from_epsg(epsg), CRS.from_epsg(4326), *bounds
+        )
+    else:
+        left, bottom, right, top = bounds
+
+    inc_angle = io.load_gdal(inc_angle_file, masked=True)
+
+    iono_inc_angle = incidence_angle_ground_to_iono(inc_angle)
+
+    num_lats, num_lons = iono_inc_angle.shape
+
+    downsample_factor: int = 10
+    # Create downsampled grid for efficiency
+    num_lats, num_lons = iono_inc_angle.shape
+    ds_num_lats = max(5, num_lats // downsample_factor)
+    ds_num_lons = max(5, num_lons // downsample_factor)
+
+    # Create the downsampled grid
+    ds_out_lats = np.linspace(top, bottom, ds_num_lats)
+    ds_out_lons = np.linspace(left, right, ds_num_lons)
+    import ipdb
+
+    # ipdb.set_trace()
+    ds_lat_grid, ds_lon_grid = np.meshgrid(ds_out_lats, ds_out_lons, indexing="ij")
+    # Downsample the incidence angle
+    ds_inc_angle = zoom(
+        iono_inc_angle, (ds_num_lats / num_lats, ds_num_lons / num_lons), order=1
+    )
+    # Ensure same size as the lat/lon grids
+    ds_inc_angle = ds_inc_angle[:ds_num_lats, :ds_num_lons]
+
+    # Calculate interpolated range delays
+    vtec_reference = read_zenith_tec(
+        reference_time, reference_tec_file, ds_lat_grid, ds_lon_grid
+    )
+    # Make the downsampled (ds_) version
+    ds_range_delay_reference = vtec_to_range_delay(vtec_reference, ds_inc_angle, freq)
+    vtec_secondary = read_zenith_tec(
+        secondary_time, secondary_tec_file, ds_lat_grid, ds_lon_grid
+    )
+    ds_range_delay_secondary = vtec_to_range_delay(vtec_secondary, ds_inc_angle, freq)
+
+    # For displacement output, positive corresponds to motion toward the satellite
+    # If range_delay_secondary is smaller than range_delay_reference, then the
+    # resulting delay difference is positive. A smaller secondary delay
+    # looks the same as motion toward the satellite.
+    ds_ifg_iono_range_delay = ds_range_delay_reference - ds_range_delay_secondary
+
+    # Finally upsample the end result:
+    ifg_iono_range_delay = zoom(
+        ds_ifg_iono_range_delay,
+        (num_lats / ds_num_lats, num_lons / ds_num_lons),
+        order=1,
+    )
+    return ifg_iono_range_delay
+
+
 def incidence_angle_ground_to_iono(inc_angle: np.ndarray, iono_height: float = 450e3):
     """Calibrate incidence angle on the ground surface to the ionosphere shell.
 

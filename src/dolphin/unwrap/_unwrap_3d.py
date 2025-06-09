@@ -327,3 +327,19 @@ def _reform_wrapped_phase(
         wrapped_phase = ifg1
 
     return unw, wrapped_phase
+
+
+def _reorder_labels(ccl: np.ndarray) -> np.ndarray:
+    # ccl = io.load_gdal(
+    #     "aligned/connected_component_labels_20160705_20160927.tif", masked=True
+    # )
+    # ccl.mask = ccl.data == DEFAULT_CCL_NODATA
+    label, counts = np.unique(ccl.ravel(), return_counts=True)
+
+    nonzero_valid_labels = label[1:-1]
+    nonzero_valid_counts = counts[1:-1]
+    idxs = np.argsort(nonzero_valid_counts)
+    out = np.zeros_like(nonzero_valid_labels)
+    new_labels = np.arange(1, len(nonzero_valid_counts) + 1)[::-1]
+    out[idxs] = new_labels
+    return out

@@ -608,7 +608,7 @@ class Network:
 
 
 def estimate_correlation_from_phase(
-    ifg: Union[VRTInterferogram, ArrayLike], window_size: int | tuple[int, int]
+    ifg: ArrayLike, window_size: int | tuple[int, int]
 ) -> np.ndarray:
     """Estimate correlation from only an interferogram (no SLCs/magnitudes).
 
@@ -618,9 +618,8 @@ def estimate_correlation_from_phase(
 
     Parameters
     ----------
-    ifg : Union[VRTInterferogram, ArrayLike]
+    ifg : ArrayLike
         Interferogram to estimate correlation from.
-        If a VRTInterferogram, will load and take the phase.
         If `ifg` is complex, will normalize to unit magnitude before estimating.
     window_size : int | tuple[int, int]
         Size of window to use for correlation estimation.
@@ -632,8 +631,6 @@ def estimate_correlation_from_phase(
         Correlation array
 
     """
-    if isinstance(ifg, VRTInterferogram):
-        ifg = ifg.load()
     nan_mask = np.isnan(ifg)
     zero_mask = ifg == 0
     if not np.iscomplexobj(ifg):
@@ -801,3 +798,188 @@ def convert_pl_to_ifg(
     # Now make a VRT to do the .conj
     _create_vrt_conj(phase_linked_slc, out_name)
     return out_name
+
+
+from numba import njit, prange
+
+
+@njit
+def _nanmedian1d(a):
+    """Numba-friendly nanmedian for 1-D views."""
+    n = 0
+    buf = np.empty(a.size, dtype=a.dtype)
+    for v in a:
+        if not np.isnan(v):
+            buf[n] = v
+            n += 1
+    if n == 0:
+        return np.nan
+    buf = buf[:n]
+    buf.sort()
+    mid = n // 2
+    return (buf[mid] + buf[mid - 1]) * 0.5 if n % 2 == 0 else buf[mid]
+
+
+@njit(parallel=True)
+def _median_filter_2d_numba(img, half_r, half_c):
+    ny, nx = img.shape
+    out = np.full_like(img, np.nan, dtype=np.float32)
+    for y in prange(ny):
+        y0 = max(0, y - half_r)
+        y1 = min(ny, y + half_r + 1)
+        for x in range(nx):
+            x0 = max(0, x - half_c)
+            x1 = min(nx, x + half_c + 1)
+            out[y, x] = _nanmedian1d(img[y0:y1, x0:x1].ravel())
+    return out
+
+
+def median_filter_nan(image, win):
+    """NaN-aware median filter using Numba."""
+    half_r, half_c = (win, win) if isinstance(win, int) else win
+    return _median_filter_2d_numba(image.astype(np.float32), half_r, half_c)
+
+
+def estimate_correlation_from_phase_median(
+    ifg: ArrayLike,
+    window_size: int | tuple[int, int] = 7,
+    backend: Literal["numba", "jax"] = "numba",
+) -> np.ndarray:
+    """Estimate correlation from only an interferogram (no SLCs/magnitudes).
+
+    This is a simple correlation estimator that takes the (complex) average
+    in a moving window in an interferogram. Used to get some estimate of interferometric
+    correlation on the result of phase-linking interferograms.
+
+    Parameters
+    ----------
+    ifg : ArrayLike
+        Interferogram to estimate correlation from.
+        If `ifg` is complex, will normalize to unit magnitude before estimating.
+    window_size : int | tuple[int, int]
+        Size of window to use for correlation estimation.
+        If int, will use a symmetrical Gaussian sigma.
+
+    Returns
+    -------
+    np.ndarray
+        Correlation array
+
+    """
+    nan_mask = np.isnan(ifg)
+    zero_mask = ifg == 0
+
+    if not np.iscomplexobj(ifg):
+        inp = np.exp(1j * np.nan_to_num(ifg))
+    else:  # strip magnitude
+        inp = np.exp(1j * np.nan_to_num(np.angle(ifg)))
+    inp[inp == 0] = np.nan
+
+    # median over cos & sin separately - more robust than complex median
+    c, s = np.real(inp), np.imag(inp)
+    if backend == "jax":
+        med_c = median_filter_nan_jax(c, window_size)
+        med_s = median_filter_nan_jax(s, window_size)
+    else:  # "numba"
+        # med_c = median_filter_nan(c, window_size)
+        # med_s = median_filter_nan(s, window_size)
+        med_c = wmedian_filter_nan(c, window_size)
+        med_s = wmedian_filter_nan(s, window_size)
+
+    cor = np.sqrt(med_c**2 + med_s**2)  # |median(e^{iφ})|
+    cor[nan_mask] = np.nan  # preserve original NaNs
+    cor[zero_mask] = 0  # input zeros ⇒ corr 0
+    return np.clip(cor, 0, 1)
+
+
+import jax.numpy as jnp
+from jax import lax
+
+
+def _nan_to_big(x):
+    """Replace NaNs by +inf so they sort to the end."""
+    return jnp.where(jnp.isnan(x), jnp.inf, x)
+
+
+def median_filter_nan_jax(img, win):
+    """NaN-aware median filter with JAX, NCHW==1."""
+    if isinstance(win, int):
+        win = (win, win)
+    pad = [(w // 2, w // 2) for w in win]
+    img = jnp.pad(img, pad, mode="constant", constant_values=jnp.nan)[None, None]
+    patches = lax.conv_general_dilated_patches(
+        img,  # NCHW(=1x1xHxW)
+        win,  # kernel size
+        window_strides=(1, 1),
+        padding="VALID",
+    )  # → shape (1, 1, H, W, wy, wx)
+    patches = _nan_to_big(patches)
+    k = win[0] * win[1]
+    idx = (k - 1) // 2  # lower median for even k
+    med = jnp.sort(patches, axis=-1)[..., idx]
+    med = jnp.where(jnp.isinf(med), jnp.nan, med)  # restore NaNs
+    return med[0, 0]  # drop batch/channel dims
+
+
+from numba import njit
+
+
+def gaussian_weights(win, sigma):
+    """Return a flat array of Gaussian weights for a (2r+1,2c+1) window."""
+    r, c = win
+    y, x = np.mgrid[-r : r + 1, -c : c + 1]
+    w = np.exp(-(x**2 + y**2) / (2 * sigma**2))
+    return w.ravel().astype(np.float32)
+
+
+@njit
+def _nanwmedian1d(vals, wts):
+    n = 0
+    buf = np.empty(vals.size, dtype=vals.dtype)
+    w_buf = np.empty(vals.size, dtype=wts.dtype)
+    for v, w in zip(vals, wts):
+        if not np.isnan(v):
+            buf[n] = v
+            w_buf[n] = w
+            n += 1
+    if n == 0:
+        return np.nan
+    idx = np.argsort(buf[:n])
+    v_sorted = buf[:n][idx]
+    w_sorted = w_buf[:n][idx]
+    half = 0.5 * w_sorted.sum()
+    acc = 0.0
+    for v, w in zip(v_sorted, w_sorted):
+        acc += w
+        if acc >= half:
+            return v
+    return v_sorted[-1]  # fallback
+
+
+@njit(parallel=True)
+def _wmedian_filter_2d(img, wts, half_r, half_c):
+    ny, nx = img.shape
+    out = np.full_like(img, np.nan, dtype=np.float32)
+    for y in prange(ny):
+        y0 = max(0, y - half_r)
+        y1 = min(ny, y + half_r + 1)
+        for x in range(nx):
+            x0 = max(0, x - half_c)
+            x1 = min(nx, x + half_c + 1)
+            window = img[y0:y1, x0:x1].ravel()
+            w = wts[
+                (half_r - (y - y0)) : (half_r + (y1 - y)),
+                (half_c - (x - x0)) : (half_c + (x1 - x)),
+            ].ravel()
+            out[y, x] = _nanwmedian1d(window, w)
+    return out
+
+
+def wmedian_filter_nan(image, win, sigma=None):
+    """NaN-aware Gaussian-weighted median filter."""
+    if isinstance(win, int):
+        win = (win, win)
+    if sigma is None:
+        sigma = max(win) / 3  # mimic your Gaussian
+    weights = gaussian_weights(win, sigma).reshape((2 * win[0] + 1, 2 * win[1] + 1))
+    return _wmedian_filter_2d(image.astype(np.float32), weights, *win)

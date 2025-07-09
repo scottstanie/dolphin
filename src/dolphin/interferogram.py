@@ -799,3 +799,406 @@ def convert_pl_to_ifg(
     # Now make a VRT to do the .conj
     _create_vrt_conj(phase_linked_slc, out_name)
     return out_name
+
+
+from functools import partial
+from typing import Tuple, Union
+
+import jax.numpy as jnp
+from jax import jit
+from jax.typing import ArrayLike
+
+
+@partial(jit, static_argnums=(1,))
+def _median_filter_2d(image: jnp.ndarray, window_size: int) -> jnp.ndarray:
+    """Apply median filter to 2D array using JAX."""
+    h, w = image.shape
+    half_window = window_size // 2
+
+    # Pad the image to handle borders
+    padded = jnp.pad(image, half_window, mode="constant", constant_values=jnp.nan)
+
+    def get_window_median(i, j):
+        window = padded[i : i + window_size, j : j + window_size]
+        # Use nanmedian to handle NaN values
+        return jnp.nanmedian(window)
+
+    # Create output array
+    result = jnp.zeros_like(image)
+
+    # Apply median filter at each position
+    for i in range(h):
+        for j in range(w):
+            result = result.at[i, j].set(get_window_median(i, j))
+
+    return result
+
+
+@partial(jit, static_argnums=(1,))
+def _median_filter_2d_vectorized(image: jnp.ndarray, window_size: int) -> jnp.ndarray:
+    """Vectorized median filter using JAX."""
+    h, w = image.shape
+    half_window = window_size // 2
+
+    # Pad the image
+    padded = jnp.pad(image, half_window, mode="constant", constant_values=jnp.nan)
+
+    # Create sliding windows using unfold-like operation
+    def extract_patches(arr, patch_size):
+        h_out = h
+        w_out = w
+        patches = jnp.zeros((h_out, w_out, patch_size, patch_size))
+
+        for i in range(h_out):
+            for j in range(w_out):
+                patches = patches.at[i, j].set(
+                    arr[i : i + patch_size, j : j + patch_size]
+                )
+
+        return patches
+
+    patches = extract_patches(padded, window_size)
+
+    # Take median over the patch dimensions
+    result = jnp.nanmedian(patches, axis=(2, 3))
+
+    return result
+
+
+def estimate_correlation_from_phase_median(
+    ifg: ArrayLike,
+    window_size: Union[int, Tuple[int, int]],
+    use_adaptive_median: bool = False,
+) -> np.ndarray:
+    """Estimate correlation from interferogram using median filtering.
+
+    This version replaces the Gaussian filter with a median filter approach.
+    Since complex numbers don't have a natural ordering, we apply median filtering
+    to the real and imaginary parts separately, then compute the magnitude.
+
+    Parameters
+    ----------
+    ifg : ArrayLike
+        Interferogram to estimate correlation from.
+        If `ifg` is complex, will normalize to unit magnitude before estimating.
+    window_size : int | tuple[int, int]
+        Size of window to use for correlation estimation.
+        If tuple, uses (height, width) for rectangular windows.
+    use_adaptive_median : bool, default False
+        If True, uses an adaptive approach that considers local phase variance.
+
+    Returns
+    -------
+    np.ndarray
+        Correlation array
+
+    """
+    # Convert to JAX array for processing
+    ifg_jax = jnp.asarray(ifg)
+
+    # Handle NaN and zero masks
+    nan_mask = jnp.isnan(ifg_jax)
+    zero_mask = ifg_jax == 0
+
+    if not jnp.iscomplexobj(ifg_jax):
+        # If they passed phase, convert to complex
+        inp = jnp.exp(1j * jnp.nan_to_num(ifg_jax))
+    else:
+        # If they passed complex, normalize to unit magnitude
+        inp = jnp.exp(1j * jnp.nan_to_num(jnp.angle(ifg_jax)))
+
+    # Set zeros to NaN for proper handling
+    inp = jnp.where(inp == 0, jnp.nan, inp)
+
+    # Handle window size
+    if isinstance(window_size, (int, float)):
+        win_h = win_w = int(window_size)
+    else:
+        win_h, win_w = window_size
+
+    # Apply median filter to real and imaginary parts separately
+    real_part = jnp.real(inp)
+    imag_part = jnp.imag(inp)
+
+    if win_h == win_w:
+        # Square window - use optimized version
+        real_filtered = _median_filter_2d_vectorized(real_part, win_h)
+        imag_filtered = _median_filter_2d_vectorized(imag_part, win_h)
+    else:
+        # Rectangular window - apply median filtering
+        # For simplicity, we'll use the square version with the larger dimension
+        win_size = max(win_h, win_w)
+        real_filtered = _median_filter_2d_vectorized(real_part, win_size)
+        imag_filtered = _median_filter_2d_vectorized(imag_part, win_size)
+
+    # Reconstruct complex values and compute correlation
+    filtered_complex = real_filtered + 1j * imag_filtered
+
+    if use_adaptive_median:
+        # Adaptive approach: weight by local phase coherence
+        phase_var = _compute_local_phase_variance(inp, win_h)
+        coherence_weight = jnp.exp(-phase_var)
+        cor = jnp.abs(filtered_complex) * coherence_weight
+    else:
+        # Standard approach: just take magnitude
+        cor = jnp.abs(filtered_complex)
+
+    # Clip to valid correlation range
+    cor = jnp.clip(cor, 0, 1)
+
+    # Restore original NaN and zero locations
+    cor = jnp.where(nan_mask, jnp.nan, cor)
+    cor = jnp.where(zero_mask, 0, cor)
+
+    return np.asarray(cor)
+
+
+@partial(jit, static_argnums=(1,))
+def _compute_local_phase_variance(inp: jnp.ndarray, window_size: int) -> jnp.ndarray:
+    """Compute local phase variance for adaptive median filtering."""
+    phases = jnp.angle(inp)
+    h, w = phases.shape
+    half_window = window_size // 2
+
+    # Pad phases
+    padded_phases = jnp.pad(
+        phases, half_window, mode="constant", constant_values=jnp.nan
+    )
+
+    def compute_variance(i, j):
+        window = padded_phases[i : i + window_size, j : j + window_size]
+        # Handle circular statistics for phase
+        mean_phase = jnp.angle(jnp.nanmean(jnp.exp(1j * window)))
+        phase_diff = jnp.angle(jnp.exp(1j * (window - mean_phase)))
+        return jnp.nanvar(phase_diff)
+
+    variance = jnp.zeros((h, w))
+    for i in range(h):
+        for j in range(w):
+            variance = variance.at[i, j].set(compute_variance(i, j))
+
+    return variance
+
+
+def estimate_correlation_from_phase_median_simple(
+    ifg: ArrayLike, window_size: Union[int, Tuple[int, int]]
+) -> np.ndarray:
+    """Simplified version using scipy for comparison."""
+    from scipy.ndimage import median_filter
+
+    # Convert inputs like original function
+    nan_mask = np.isnan(ifg)
+    zero_mask = ifg == 0
+
+    if not np.iscomplexobj(ifg):
+        inp = np.exp(1j * np.nan_to_num(ifg))
+    else:
+        inp = np.exp(1j * np.nan_to_num(np.angle(ifg)))
+
+    inp[inp == 0] = np.nan
+
+    # Handle window size
+    if isinstance(window_size, (int, float)):
+        win_size = int(window_size)
+    else:
+        win_size = window_size
+
+    # Apply median filter to real and imaginary parts
+    real_part = np.real(inp)
+    imag_part = np.imag(inp)
+
+    # Handle NaN values by temporarily setting them to 0
+    real_valid = np.where(np.isnan(real_part), 0, real_part)
+    imag_valid = np.where(np.isnan(imag_part), 0, imag_part)
+
+    # Apply median filter
+    real_filtered = median_filter(real_valid, size=win_size)
+    imag_filtered = median_filter(imag_valid, size=win_size)
+
+    # Reconstruct and compute correlation
+    filtered_complex = real_filtered + 1j * imag_filtered
+    cor = np.clip(np.abs(filtered_complex), 0, 1)
+
+    # Restore NaN and zero masks
+    cor[nan_mask] = np.nan
+    cor[zero_mask] = 0
+
+    return cor
+
+
+from typing import Union
+
+from jax import jit
+from scipy.ndimage import gaussian_filter
+
+
+def estimate_correlation_bilateral(
+    ifg: ArrayLike,
+    window_size: int = 11,
+    sigma_spatial: Optional[float] = None,
+    sigma_intensity: float = 0.5,
+) -> np.ndarray:
+    """Edge-preserving correlation using bilateral filtering approach.
+
+    This preserves sharp edges while smoothing in homogeneous regions.
+    """
+    if sigma_spatial is None:
+        sigma_spatial = window_size / 3
+
+    # Prepare input like original function
+    nan_mask = np.isnan(ifg)
+    zero_mask = ifg == 0
+
+    if not np.iscomplexobj(ifg):
+        inp = np.exp(1j * np.nan_to_num(ifg))
+    else:
+        inp = np.exp(1j * np.nan_to_num(np.angle(ifg)))
+
+    inp[inp == 0] = np.nan
+
+    # Bilateral filtering on complex values
+    from skimage.restoration import denoise_bilateral
+
+    # Apply bilateral to real and imaginary parts separately
+    real_part = np.real(inp)
+    imag_part = np.imag(inp)
+
+    # Handle NaNs for bilateral filter
+    real_valid = np.nan_to_num(real_part, nan=0)
+    imag_valid = np.nan_to_num(imag_part, nan=0)
+
+    # Apply bilateral filtering
+    real_filtered = denoise_bilateral(
+        real_valid,
+        sigma_color=sigma_intensity,
+        sigma_spatial=sigma_spatial,
+        channel_axis=None,
+    )
+    imag_filtered = denoise_bilateral(
+        imag_valid,
+        sigma_color=sigma_intensity,
+        sigma_spatial=sigma_spatial,
+        channel_axis=None,
+    )
+
+    # Reconstruct and compute correlation
+    filtered_complex = real_filtered + 1j * imag_filtered
+    cor = np.clip(np.abs(filtered_complex), 0, 1)
+
+    # Restore masks
+    cor[nan_mask] = np.nan
+    cor[zero_mask] = 0
+
+    return cor
+
+
+def estimate_correlation_guided_filter(
+    ifg: ArrayLike, window_size: int = 11, epsilon: float = 0.01
+) -> np.ndarray:
+    """Use guided filtering for edge-preserving correlation estimation."""
+
+    def guided_filter(I, p, r, eps):
+        """Guided filter implementation."""
+        h, w = I.shape
+        np.ones((h, w))
+
+        # Compute statistics of I in each local patch
+        mean_I = gaussian_filter(I, sigma=r / 3)
+        mean_p = gaussian_filter(p, sigma=r / 3)
+        mean_Ip = gaussian_filter(I * p, sigma=r / 3)
+        cov_Ip = mean_Ip - mean_I * mean_p
+
+        mean_II = gaussian_filter(I * I, sigma=r / 3)
+        var_I = mean_II - mean_I * mean_I
+
+        a = cov_Ip / (var_I + eps)
+        b = mean_p - a * mean_I
+
+        mean_a = gaussian_filter(a, sigma=r / 3)
+        mean_b = gaussian_filter(b, sigma=r / 3)
+
+        q = mean_a * I + mean_b
+        return q
+
+    nan_mask = np.isnan(ifg)
+    zero_mask = ifg == 0
+
+    if not np.iscomplexobj(ifg):
+        inp = np.exp(1j * np.nan_to_num(ifg))
+    else:
+        inp = np.exp(1j * np.nan_to_num(np.angle(ifg)))
+
+    inp[inp == 0] = np.nan
+
+    # Use magnitude as guide image
+    guide = np.abs(inp)
+    guide = np.nan_to_num(guide, nan=0)
+
+    # Initial correlation estimate (simple average)
+    real_part = np.nan_to_num(np.real(inp), nan=0)
+    imag_part = np.nan_to_num(np.imag(inp), nan=0)
+
+    # Apply gaussian for initial estimate
+    sigma = window_size / 3
+    real_smooth = gaussian_filter(real_part, sigma=sigma)
+    imag_smooth = gaussian_filter(imag_part, sigma=sigma)
+
+    initial_cor = np.abs(real_smooth + 1j * imag_smooth)
+
+    # Apply guided filter
+    filtered_cor = guided_filter(guide, initial_cor, window_size // 2, epsilon)
+
+    # Restore masks
+    filtered_cor = np.clip(filtered_cor, 0, 1)
+    filtered_cor[nan_mask] = np.nan
+    filtered_cor[zero_mask] = 0
+
+    return filtered_cor
+
+
+# Example usage and comparison
+if __name__ == "__main__":
+    # Create sample data
+    np.random.seed(42)
+    h, w = 100, 100
+
+    # Create a synthetic interferogram with some coherent and incoherent regions
+    coherent_phase = np.random.uniform(0, 2 * np.pi, (h // 2, w))
+    incoherent_phase = np.random.uniform(0, 2 * np.pi, (h // 2, w))
+
+    # Add some spatial correlation to coherent region
+    from scipy.ndimage import gaussian_filter
+
+    coherent_phase = gaussian_filter(coherent_phase, sigma=2.0)
+
+    test_ifg = np.vstack([coherent_phase, incoherent_phase])
+
+    # Add some NaN values
+    test_ifg[10:20, 10:20] = np.nan
+
+    # Compare results
+    window_size = 5
+
+    print("Computing correlation estimates...")
+
+    # JAX version
+    cor_jax = estimate_correlation_from_phase_median(test_ifg, window_size)
+
+    # Simple scipy version
+    cor_simple = estimate_correlation_from_phase_median_simple(test_ifg, window_size)
+
+    print(
+        f"JAX median correlation - mean: {np.nanmean(cor_jax):.3f}, std:"
+        f" {np.nanstd(cor_jax):.3f}"
+    )
+    print(
+        f"Simple median correlation - mean: {np.nanmean(cor_simple):.3f}, std:"
+        f" {np.nanstd(cor_simple):.3f}"
+    )
+
+    # Show difference in coherent vs incoherent regions
+    coherent_region = cor_jax[: h // 2, :]
+    incoherent_region = cor_jax[h // 2 :, :]
+
+    print(f"Coherent region correlation: {np.nanmean(coherent_region):.3f}")
+    print(f"Incoherent region correlation: {np.nanmean(incoherent_region):.3f}")

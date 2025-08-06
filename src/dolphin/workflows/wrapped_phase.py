@@ -58,7 +58,7 @@ def run(
         In the case of sequential phase linking, this is the average of all ministacks.
     ps_looked_file : Path
         The multilooked boolean persistent scatterer file.
-    amp_disp_looked_file : Path
+    disp_looked_file : Path
         The multilooked amplitude dispersion file.
     shp_count_file : Path
         Path to the created SHP counts file.
@@ -128,9 +128,10 @@ def run(
             like_filename=vrt_stack.outfile,
             output_file=ps_output,
             output_amp_mean_file=cfg.ps_options._amp_mean_file,
-            output_amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
-            amp_dispersion_threshold=cfg.ps_options.amp_dispersion_threshold,
-            existing_amp_dispersion_file=existing_disp,
+            output_dispersion_file=cfg.ps_options._dispersion_file,
+            dispersion_threshold=cfg.ps_options.dispersion_threshold,
+            dispersion_metric=cfg.ps_options.dispersion_metric,
+            existing_dispersion_file=existing_disp,
             nodata_mask=nodata_mask,
             existing_amp_mean_file=existing_amp,
             block_shape=cfg.worker_settings.block_shape,
@@ -139,10 +140,10 @@ def run(
 
     # Save a looked version of the PS mask too
     strides_dict = cfg.output_options.strides.model_dump()
-    ps_looked_file, amp_disp_looked_file = ps.multilook_ps_files(
+    ps_looked_file, disp_looked_file = ps.multilook_ps_files(
         strides=strides_dict,
         ps_mask_file=cfg.ps_options._output_file,
-        amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
+        dispersion_file=cfg.ps_options._dispersion_file,
     )
 
     # #########################
@@ -209,7 +210,7 @@ def run(
             mask_file=mask_filename,
             ps_mask_file=ps_output,
             amp_mean_file=cfg.ps_options._amp_mean_file,
-            amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
+            amp_dispersion_file=cfg.ps_options._dispersion_file,
             shp_method=cfg.phase_linking.shp_method,
             shp_alpha=cfg.phase_linking.shp_alpha,
             shp_nslc=shp_nslc,
@@ -247,7 +248,7 @@ def run(
             comp_slc_list,
             temp_coh_file,
             ps_looked_file,
-            amp_disp_looked_file,
+            disp_looked_file,
             shp_count_file,
             similarity_file,
         )
@@ -294,7 +295,7 @@ def run(
         comp_slc_list,
         temp_coh_file,
         ps_looked_file,
-        amp_disp_looked_file,
+        disp_looked_file,
         shp_count_file,
         similarity_file,
     )

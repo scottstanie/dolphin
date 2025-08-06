@@ -80,6 +80,6 @@ class PsWorkflow(WorkflowBase):
         ]
         # Add the output PS files we'll create to the `PS` directory, making
         # sure they're inside the work directory
-        ps_opts._amp_dispersion_file = work_dir / ps_opts._amp_dispersion_file
+        ps_opts._dispersion_file = work_dir / ps_opts._dispersion_file
         ps_opts._amp_mean_file = work_dir / ps_opts._amp_mean_file
         ps_opts._output_file = work_dir / ps_opts._output_file

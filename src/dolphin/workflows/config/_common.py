@@ -19,6 +19,7 @@ from pydantic import (
 from dolphin import __version__ as _dolphin_version
 from dolphin._types import Bbox
 from dolphin.io import DEFAULT_HDF5_OPTIONS, DEFAULT_TIFF_OPTIONS
+from dolphin.ps import DispersionMetric
 from dolphin.stack import CompressedSlcPlan
 
 from ._enums import ShpMethod
@@ -44,14 +45,42 @@ class PsOptions(BaseModel, extra="forbid"):
 
     _directory: Path = PrivateAttr(Path("PS"))
     _output_file: Path = PrivateAttr(Path("PS/ps_pixels.tif"))
-    _amp_dispersion_file: Path = PrivateAttr(Path("PS/amp_dispersion.tif"))
+    _dispersion_file: Path = PrivateAttr(Path("PS/dispersion.tif"))
     _amp_mean_file: Path = PrivateAttr(Path("PS/amp_mean.tif"))
 
-    amp_dispersion_threshold: float = Field(
+    # Backwards compatibility
+    _amp_dispersion_file: Path = PrivateAttr(Path("PS/amp_dispersion.tif"))
+
+    dispersion_threshold: float = Field(
         0.25,
-        description="Amplitude dispersion threshold to consider a pixel a PS.",
+        description="Dispersion threshold to consider a pixel a PS.",
         ge=0.0,
     )
+    dispersion_metric: DispersionMetric = Field(
+        DispersionMetric.NAD,
+        description="Dispersion metric to use for PS selection: 'nad' or 'nmad'.",
+    )
+
+    # Backwards compatibility
+    amp_dispersion_threshold: Optional[float] = Field(
+        None,
+        description="Deprecated: use dispersion_threshold instead.",
+        ge=0.0,
+    )
+
+    @model_validator(mode="after")
+    def _handle_backwards_compatibility(self) -> "PsOptions":
+        # Handle backwards compatibility for amp_dispersion_threshold
+        if self.amp_dispersion_threshold is not None:
+            if hasattr(self, "_dispersion_threshold_set"):
+                # Both were set, which is an error
+                msg = (
+                    "Cannot specify both dispersion_threshold and"
+                    " amp_dispersion_threshold"
+                )
+                raise ValueError(msg)
+            self.dispersion_threshold = self.amp_dispersion_threshold
+        return self
 
 
 class HalfWindow(BaseModel, extra="forbid"):

@@ -5,6 +5,7 @@ from osgeo import gdal
 
 import dolphin.ps
 from dolphin import io
+from dolphin.ps import DispersionMetric
 
 
 def test_ps_block(slc_stack):
@@ -167,3 +168,146 @@ def test_single_group():
     )
     assert_allclose(result_disp, amp_disp, rtol=1e-5)
     assert_allclose(result_mean, amp_mean, rtol=1e-5)
+
+
+def test_dispersion_metric_enum():
+    """Test DispersionMetric enum functionality."""
+    # Test from_any method
+    assert DispersionMetric.from_any("nad") == DispersionMetric.NAD
+    assert DispersionMetric.from_any("NAD") == DispersionMetric.NAD
+    assert DispersionMetric.from_any("amp_dispersion") == DispersionMetric.NAD
+    assert DispersionMetric.from_any("nmad") == DispersionMetric.NMAD
+    assert DispersionMetric.from_any("NMAD") == DispersionMetric.NMAD
+    assert DispersionMetric.from_any(DispersionMetric.NAD) == DispersionMetric.NAD
+    assert DispersionMetric.from_any(DispersionMetric.NMAD) == DispersionMetric.NMAD
+
+    # Test invalid input
+    with pytest.raises(ValueError, match="Unknown dispersion metric"):
+        DispersionMetric.from_any("invalid")
+
+
+def test_ps_block_nmad(slc_stack):
+    """Test PS block calculation with NMAD metric."""
+    # Run the PS selector on entire stack with NMAD
+    amp_median, nmad_disp, ps_pixels = dolphin.ps.calc_ps_block(
+        np.abs(slc_stack),
+        dispersion_threshold=0.25,
+        dispersion_metric=DispersionMetric.NMAD,
+    )
+    assert amp_median.shape == nmad_disp.shape == ps_pixels.shape
+    assert amp_median.dtype == nmad_disp.dtype == np.float32
+    assert ps_pixels.dtype == bool
+
+    # For random data, NMAD might find some PS pixels (depending on the distribution)
+
+    assert amp_median.min() > 0
+    assert nmad_disp.min() >= 0
+
+    # Check that sigma_psi attribute is attached for NMAD
+    assert hasattr(nmad_disp, "sigma_psi")
+    sigma_psi = nmad_disp.sigma_psi
+    assert sigma_psi.shape == nmad_disp.shape
+    assert np.all(sigma_psi >= 0)
+
+
+def test_ps_block_nad_vs_nmad(slc_stack):
+    """Compare NAD and NMAD results on the same data."""
+    stack_mag = np.abs(slc_stack)
+
+    # NAD calculation
+    mean_nad, disp_nad, ps_nad = dolphin.ps.calc_ps_block(
+        stack_mag,
+        dispersion_threshold=0.25,
+        dispersion_metric=DispersionMetric.NAD,
+    )
+
+    # NMAD calculation
+    median_nmad, disp_nmad, ps_nmad = dolphin.ps.calc_ps_block(
+        stack_mag,
+        dispersion_threshold=0.25,
+        dispersion_metric=DispersionMetric.NMAD,
+    )
+
+    # They should have same shape but different values
+    assert mean_nad.shape == median_nmad.shape
+    assert disp_nad.shape == disp_nmad.shape
+    assert ps_nad.shape == ps_nmad.shape
+
+    # For random data, NAD and NMAD should generally be different
+    assert not np.array_equal(mean_nad, median_nmad)
+    assert not np.array_equal(disp_nad, disp_nmad)
+
+    # NMAD should not have sigma_psi attribute
+    assert not hasattr(disp_nad, "sigma_psi")
+    # NMAD should have sigma_psi attribute
+    assert hasattr(disp_nmad, "sigma_psi")
+
+
+def test_create_ps_nmad(tmp_path, vrt_stack):
+    """Test create_ps function with NMAD metric."""
+    ps_mask_file = tmp_path / "ps_pixels_nmad.tif"
+    dispersion_file = tmp_path / "nmad_disp.tif"
+    amp_mean_file = tmp_path / "amp_median.tif"
+
+    dolphin.ps.create_ps(
+        reader=vrt_stack,
+        like_filename=vrt_stack.outfile,
+        output_dispersion_file=dispersion_file,
+        output_amp_mean_file=amp_mean_file,
+        output_file=ps_mask_file,
+        dispersion_metric=DispersionMetric.NMAD,
+        dispersion_threshold=0.25,
+    )
+
+    assert io.get_raster_dtype(ps_mask_file) == np.uint8
+    assert io.get_raster_dtype(amp_mean_file) == np.float32
+    assert io.get_raster_dtype(dispersion_file) == np.float32
+
+
+def test_create_ps_backwards_compatibility(tmp_path, vrt_stack):
+    """Test that old parameter names still work with deprecation warnings."""
+    ps_mask_file = tmp_path / "ps_pixels_compat.tif"
+    amp_dispersion_file = tmp_path / "amp_disp_compat.tif"
+    amp_mean_file = tmp_path / "amp_mean_compat.tif"
+
+    # Test using old parameter names
+    with pytest.warns(DeprecationWarning):
+        dolphin.ps.create_ps(
+            reader=vrt_stack,
+            like_filename=vrt_stack.outfile,
+            output_amp_dispersion_file=amp_dispersion_file,
+            output_amp_mean_file=amp_mean_file,
+            output_file=ps_mask_file,
+            amp_dispersion_threshold=0.25,
+        )
+
+    assert io.get_raster_dtype(ps_mask_file) == np.uint8
+    assert io.get_raster_dtype(amp_mean_file) == np.float32
+    assert io.get_raster_dtype(amp_dispersion_file) == np.float32
+
+
+def test_multilook_ps_files_backwards_compatibility(tmp_path, vrt_stack):
+    """Test multilook_ps_files backwards compatibility."""
+    ps_mask_file = tmp_path / "ps_pixels.tif"
+    dispersion_file = tmp_path / "disp.tif"
+    amp_mean_file = tmp_path / "amp_mean.tif"
+
+    dolphin.ps.create_ps(
+        reader=vrt_stack,
+        like_filename=vrt_stack.outfile,
+        output_dispersion_file=dispersion_file,
+        output_amp_mean_file=amp_mean_file,
+        output_file=ps_mask_file,
+    )
+
+    # Test with old parameter name
+    with pytest.warns(DeprecationWarning):
+        output_ps_file, output_disp_file = dolphin.ps.multilook_ps_files(
+            strides={"x": 5, "y": 3},
+            ps_mask_file=ps_mask_file,
+            dispersion_file=None,
+            amp_dispersion_file=dispersion_file,
+        )
+
+    assert io.get_raster_dtype(output_ps_file) == np.uint8
+    assert io.get_raster_dtype(output_disp_file) == np.float32

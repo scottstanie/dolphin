@@ -42,7 +42,7 @@ def run(
     output_file_list = [
         cfg.ps_options._output_file,
         cfg.ps_options._amp_mean_file,
-        cfg.ps_options._amp_dispersion_file,
+        cfg.ps_options._dispersion_file,
     ]
     ps_output = cfg.ps_options._output_file
     if all(f.exists() for f in output_file_list):
@@ -103,22 +103,23 @@ def run(
         reader=vrt_stack,
         output_file=output_file_list[0],
         output_amp_mean_file=output_file_list[1],
-        output_amp_dispersion_file=output_file_list[2],
+        output_dispersion_file=output_file_list[2],
         like_filename=vrt_stack.outfile,
-        amp_dispersion_threshold=cfg.ps_options.amp_dispersion_threshold,
+        dispersion_threshold=cfg.ps_options.dispersion_threshold,
+        dispersion_metric=cfg.ps_options.dispersion_metric,
         nodata_mask=nodata_mask,
         block_shape=cfg.worker_settings.block_shape,
     )
     # Save a looked version of the PS mask too
     strides_dict = cfg.output_options.strides.model_dump()
     if compute_looked:
-        ps_looked_file, amp_disp_looked = dolphin.ps.multilook_ps_files(
+        ps_looked_file, disp_looked = dolphin.ps.multilook_ps_files(
             strides=strides_dict,
             ps_mask_file=cfg.ps_options._output_file,
-            amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
+            dispersion_file=cfg.ps_options._dispersion_file,
         )
         output_file_list.append(ps_looked_file)
-        output_file_list.append(amp_disp_looked)
+        output_file_list.append(disp_looked)
 
     # Print the maximum memory usage for each worker
     max_mem = get_max_memory_usage(units="GB")

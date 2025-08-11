@@ -1,90 +1,104 @@
-# This is the image we are going add micromaba to:
-ARG BASE=ubuntu:22.04@sha256:7a57c69fe1e9d5b97c5fe649849e79f2cfc3bf11d10bbd5218b4eb61716aebe6
+# syntax=docker/dockerfile:1.7
 
-# bring in the micromamba image so we can copy files from it
-FROM mambaorg/micromamba:1.1.0@sha256:53697a4bae2d9a4407463b8f314d370e201c58f6b5e5ff7c1f24699ed7e37a41 AS micromamba
+# Stage 1: build environment
+FROM ghcr.io/prefix-dev/pixi:0.40.0 AS build
 
-FROM $BASE
+# Keep the env in a known, relocatable path
+ENV PIXI_HOME=/opt/pixi
+ENV ENV_PREFIX=${PIXI_HOME}/envs/default
 
-# Needed to redefine the arg so we can use it later
-ARG BASE
+# COPY pixi.lock pyproject.toml /app
+COPY . /app/
+WORKDIR /app
 
-# Label image following opencontainers image-spec annotations recommendation:
-# https://github.com/opencontainers/image-spec/blob/main/annotations.md
-LABEL org.opencontainers.image.description="Container for InSAR PS/DS phase analysis using dolphin"
-LABEL org.opencontainers.image.authors="Scott Staniewicz <scott.j.staniewicz@jpl.nasa.gov>"
-LABEL org.opencontainers.image.url="https://github.com/isce-framework/dolphin"
-LABEL org.opencontainers.image.source="https://github.com/isce-framework/dolphin"
-LABEL org.opencontainers.image.documentation="https://dolphin-insar.readthedocs.io/en/latest/"
-LABEL org.opencontainers.image.licenses="BSD-3-Clause OR Apache-2.0"
+# Copy only project metadata & lockfiles first
 
-# Install CA certificates if the base image has apt-get, otherwise we can't install conda packages
-RUN if command -v apt-get > /dev/null; then \
-    apt-get update && \
-    apt-get install -y ca-certificates wget && \
-    rm -rf /var/lib/apt/lists/*; \
-    fi
+# Install the locked environment (no source yet)
+# --locked/--frozen ensures no resolver drift in CI
+RUN pixi install --locked -e default
+RUN pixi shell-hook -e default > /shell-hook.sh
+# extend the shell-hook script to run the command passed to the container
+RUN echo 'exec "$@"' >> /shell-hook.sh
 
-ARG MAMBA_USER=mamba
-ARG MAMBA_USER_ID=1000
-ARG MAMBA_USER_GID=1000
-ENV MAMBA_USER=$MAMBA_USER
-ENV MAMBA_ROOT_PREFIX="/opt/conda"
-ENV MAMBA_EXE="/bin/micromamba"
+# # ---- Now add source and extras that must live in the env ----
+# COPY src ./src
+# COPY README.md LICENSE ./
+#
+# # # Extra pip/git deps that aren’t in conda-forge:
+# # # (install them into the *same* env)
+# # RUN python -m pip install --no-deps \
+# #     "snaphu>=0.4" \
+# #     git+https://github.com/isce-framework/spurt@main
+# # # (You said we can ignore whirlwind; keep or remove as needed.)
+#
+# # Install your package itself (non-editable; smaller)
+# # RUN ${ENV_PREFIX}/bin/python -m pip install --no-deps .
+#
+# # Optional: prune/strip to cut tens to hundreds of MB
+# # (strip is present in the pixi image; if not, install binutils in this stage)
+# RUN find ${ENV_PREFIX} -type f -name "*.a" -delete && \
+#     find ${ENV_PREFIX} -type d -name "tests" -prune -exec rm -rf {} + && \
+#     find ${ENV_PREFIX} -type f -name "*.pyc" -delete && \
+#     find ${ENV_PREFIX} -type d -name "__pycache__" -prune -exec rm -rf {} + || true
+# # Strip shared libs and binaries (best-effort)
+# RUN set -e; \
+#     if command -v strip >/dev/null 2>&1; then \
+#       find ${ENV_PREFIX} -type f \( -name "*.so" -o -perm -111 \) -exec sh -c 'file -b "$1" | grep -q ELF && strip --strip-unneeded "$1" || true' _ {} \; ; \
+#     fi
 
-COPY --from=micromamba "$MAMBA_EXE" "$MAMBA_EXE"
-COPY --from=micromamba /usr/local/bin/_activate_current_env.sh /usr/local/bin/_activate_current_env.sh
-COPY --from=micromamba /usr/local/bin/_dockerfile_shell.sh /usr/local/bin/_dockerfile_shell.sh
-COPY --from=micromamba /usr/local/bin/_entrypoint.sh /usr/local/bin/_entrypoint.sh
-# The `RUN true` is a weird hack to prevent "layer does not exist" errors
-# apparently arising from multi-stage builds? https://stackoverflow.com/a/62409523/4174466
-RUN true
-COPY --from=micromamba /usr/local/bin/_activate_current_env.sh /usr/local/bin/_activate_current_env.sh
-RUN true
-COPY --from=micromamba /usr/local/bin/_dockerfile_initialize_user_accounts.sh /usr/local/bin/_dockerfile_initialize_user_accounts.sh
-RUN true
-COPY --from=micromamba /usr/local/bin/_dockerfile_setup_root_prefix.sh /usr/local/bin/_dockerfile_setup_root_prefix.sh
+############################
+# Stage 2: minimal runtime
+############################
 
-RUN /usr/local/bin/_dockerfile_initialize_user_accounts.sh && \
-    /usr/local/bin/_dockerfile_setup_root_prefix.sh
+FROM ubuntu:24.04 AS production
 
+# only copy the production environment into prod container
+# please note that the "prefix" (path) needs to stay the same as in the build container
+# COPY --from=build /app/.pixi/envs/default /app/.pixi/envs/default
+COPY --from=build /shell-hook.sh /shell-hook.sh
+WORKDIR /app
+# set the entrypoint to the shell-hook script (activate the environment and run the command)
+# no more pixi needed in the prod container
+ENTRYPOINT ["/bin/bash", "/shell-hook.sh"]
 
-# Location to install dolphin from the pyproject.toml
-WORKDIR /dolphin
-# Allow us to create new files in the workdir when pip installing
-RUN chown $MAMBA_USER:$MAMBA_USER /dolphin
-
-USER $MAMBA_USER
-
-SHELL ["/usr/local/bin/_dockerfile_shell.sh"]
-
-
-# Install conda packages
-# https://github.com/mamba-org/micromamba-docker#quick-start
-COPY --chown=$MAMBA_USER:$MAMBA_USER docker/specfile.txt /tmp/specfile.txt
-RUN micromamba install --yes --channel conda-forge -n base -f /tmp/specfile.txt && \
-    # cxx-compiler for whirlwind:
-    micromamba install --yes --channel conda-forge -n base cxx-compiler && \
-    micromamba clean --all --yes
-
-COPY --chown=$MAMBA_USER:$MAMBA_USER . .
-
-# Activate, otherwise python will not be found
-# https://github.com/mamba-org/micromamba-docker#running-commands-in-dockerfile-within-the-conda-environment
-ARG MAMBA_DOCKERFILE_ACTIVATE=1
-# For now, manually install tophu/snaphu from git/pip
-RUN python -m pip install --no-deps \
-    "snaphu>=0.4" \
-    git+https://github.com/isce-framework/tophu@66df96fc4645f6977421336ed96c553833216c07 \
-    git+https://github.com/isce-framework/spurt@main \
-    git+https://github.com/isce-framework/whirlwind@40defb38d2d6deca2819934788ebbc57e418e32d
-
-# --no-deps because they are installed with conda
-RUN python -m pip install --no-deps .
-
-# Run the entrypoint from the /work directory
-# This means if they mount a volume to /work, we won't be mixing in the repository code
-WORKDIR /work
-
-ENTRYPOINT ["/usr/local/bin/_entrypoint.sh"]
-CMD ["dolphin", "--help"]
+# CMD ["dolphin"]
+####
+# FROM debian:bookworm-slim AS runtime
+#
+# # Tiny but safe system deps (certs + basic locale)
+# RUN apt-get update && \
+#     apt-get install -y --no-install-recommends ca-certificates libstdc++6 tini && \
+#     rm -rf /var/lib/apt/lists/*
+#
+# # OCI labels
+# LABEL org.opencontainers.image.description="Container for InSAR PS/DS phase analysis using dolphin" \
+#       org.opencontainers.image.authors="Scott Staniewicz <scott.j.staniewicz@jpl.nasa.gov>" \
+#       org.opencontainers.image.url="https://github.com/isce-framework/dolphin" \
+#       org.opencontainers.image.source="https://github.com/isce-framework/dolphin" \
+#       org.opencontainers.image.documentation="https://dolphin-insar.readthedocs.io/en/latest/" \
+#       org.opencontainers.image.licenses="BSD-3-Clause OR Apache-2.0"
+#
+# # Copy only the final environment (no caches)
+# ENV ENV_PREFIX=/opt/env
+# COPY --from=build /opt/pixi/envs/default ${ENV_PREFIX}
+#
+# # Non-root user
+# ARG PIXI_USER_ID=1000
+# ARG PIXI_USER_GID=1000
+# RUN groupadd -g ${PIXI_USER_GID} pixi && \
+#     useradd -m -u ${PIXI_USER_ID} -g ${PIXI_USER_GID} -s /bin/bash pixi && \
+#     mkdir -p /work && chown -R pixi:pixi /work
+#
+# # Wire up the env without activation
+# ENV PATH="${ENV_PREFIX}/bin:${PATH}"
+# # Some packages expect these:
+# ENV CONDA_PREFIX="${ENV_PREFIX}"
+# ENV LD_LIBRARY_PATH="${ENV_PREFIX}/lib:${LD_LIBRARY_PATH}"
+# ENV PYTHONNOUSERSITE=1
+# WORKDIR /work
+# USER pixi
+#
+# # Use tini as PID 1 for signal handling
+# ENTRYPOINT ["/usr/bin/tini","--"]
+# CMD ["dolphin","--help"]
+#

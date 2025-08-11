@@ -11,4 +11,4 @@ services:
             - $(realpath output):$WORKDIR/output
         working_dir: $WORKDIR
         image: $TAG
-        command: dolphin run dolphin_config.yaml
+        command: pixi run dolphin run dolphin_config.yaml

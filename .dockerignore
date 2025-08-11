@@ -1,10 +1,51 @@
+# Python artifacts
 **/__pycache__/*
+*.pyc
+*.pyo
+*.pyd
+.Python
 .mypy_cache/*
-.asv
+.pytest_cache/*
+*.egg-info/
 build/
-data/
-tests/data/*
-docs/notebooks/input_slcs/*
 dist/
+.tox/
 .nox/
+.coverage
+htmlcov/
+.coverage.*
+
+# Development files
+.git/
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+docs/
 paper/
+*.md
+!README.md
+
+# Test and benchmark data
+tests/data/*
+benchmarks/
+data/
+docs/notebooks/input_slcs/*
+
+# Build artifacts
+.asv
+conda-env.yml
+docker/specfile.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.*
+.pixi

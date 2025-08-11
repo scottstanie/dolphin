@@ -1,0 +1,63 @@
+# Build stage - install dependencies
+FROM ghcr.io/prefix-dev/pixi:latest AS build
+
+WORKDIR /app
+# Copy source code and project files
+COPY . .
+
+# Set version for setuptools_scm since we don't have git history in Docker
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_DOLPHIN=0.1.0
+
+# Install dependencies to /app/.pixi/envs/default
+RUN pixi install
+
+# Create the shell-hook bash script to activate the environment
+RUN pixi shell-hook -s bash > /shell-hook
+RUN echo "#!/bin/bash" > /app/entrypoint.sh
+RUN cat /shell-hook >> /app/entrypoint.sh
+# Extend the shell-hook script to run the command passed to the container
+RUN echo 'exec "$@"' >> /app/entrypoint.sh
+
+# Production stage - minimal runtime image
+FROM ubuntu:22.04 AS production
+
+# Install minimal system dependencies if needed
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Only copy the pixi environment (not the build tools)
+# Note: prefix path must stay the same as in build container
+COPY --from=build /app/.pixi/envs/default /app/.pixi/envs/default
+COPY --from=build --chmod=0755 /app/entrypoint.sh /app/entrypoint.sh
+
+# Copy source code
+COPY --from=build /app/src /app/src
+COPY --from=build /app/pyproject.toml /app/pyproject.toml
+
+# Create user for runtime
+ARG PIXI_USER_ID=1000
+ARG PIXI_USER_GID=1000
+RUN groupadd -g $PIXI_USER_GID pixi && \
+    useradd -m -u $PIXI_USER_ID -g $PIXI_USER_GID -s /bin/bash pixi && \
+    chown -R pixi:pixi /app
+
+USER pixi
+
+# Label image following opencontainers image-spec annotations recommendation:
+LABEL org.opencontainers.image.description="Container for InSAR PS/DS phase analysis using dolphin"
+LABEL org.opencontainers.image.authors="Scott Staniewicz <scott.j.staniewicz@jpl.nasa.gov>"
+LABEL org.opencontainers.image.url="https://github.com/isce-framework/dolphin"
+LABEL org.opencontainers.image.source="https://github.com/isce-framework/dolphin"
+LABEL org.opencontainers.image.documentation="https://dolphin-insar.readthedocs.io/en/latest/"
+LABEL org.opencontainers.image.licenses="BSD-3-Clause OR Apache-2.0"
+
+# Set up working directory for user data
+WORKDIR /work
+RUN mkdir -p /work && chown pixi:pixi /work
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["dolphin", "--help"]

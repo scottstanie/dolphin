@@ -5,10 +5,10 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-readonly USAGE="usage: $0 [-t TAG] [-u MAMBA_USER_ID] [-b BASE]"
+readonly USAGE="usage: $0 [-t TAG] [-u PIXI_USER_ID] [-b BASE]"
 readonly HELP="$USAGE
 
-Build the docker image for dolphin.
+Build the docker image for dolphin using pixi.
 
 options:
 -t, --tag TAG           Specify a name/tag for the docker image. Default: isce-framework/dolphin:latest
@@ -26,9 +26,9 @@ while [[ $# -gt 0 ]]; do
         shift
         shift
         ;;
-        # Add the ability to specify build-arg MAMBA_USER_ID
+        # Add the ability to specify build-arg PIXI_USER_ID
     -u | --user-id)
-        MAMBA_USER_ID="$2"
+        PIXI_USER_ID="$2"
         shift
         shift
         ;;
@@ -62,11 +62,11 @@ else
     cmd_base="$cmd_base --build-arg BASE=$BASE"
 fi
 
-# append MAMBA_USER_ID if specified:
-if [ -z "${MAMBA_USER_ID+x}" ]; then
+# append PIXI_USER_ID if specified:
+if [ -z "${PIXI_USER_ID+x}" ]; then
     cmd_base="$cmd_base"
 else
-    cmd_base="$cmd_base --build-arg MAMBA_USER_ID=$MAMBA_USER_ID"
+    cmd_base="$cmd_base --build-arg PIXI_USER_ID=$PIXI_USER_ID"
 fi
 
 # finish with ".":

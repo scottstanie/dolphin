@@ -82,6 +82,7 @@ def run_phase_linking(
     baseline_lag: Optional[int] = None,
     first_real_slc_idx: int = 0,
     compute_crlb: bool = True,
+    flatten: bool = True,
 ) -> PhaseLinkOutput:
     """Estimate the linked phase for a stack of SLCs.
 
@@ -202,6 +203,7 @@ def run_phase_linking(
         baseline_lag=baseline_lag,
         first_real_slc_idx=first_real_slc_idx,
         compute_crlb=compute_crlb,
+        flatten=flatten,
     )
 
     # Get the smaller, looked versions of the masks
@@ -259,6 +261,7 @@ def run_cpl(
     reference_idx: int = 0,
     neighbor_arrays: Optional[np.ndarray] = None,
     baseline_lag: Optional[int] = None,
+    flatten: bool = True,
     first_real_slc_idx: int = 0,
     compute_crlb: bool = True,
 ) -> PhaseLinkOutput:
@@ -329,6 +332,22 @@ def run_cpl(
         strides,
         neighbor_arrays=neighbor_arrays,
     )
+
+    if flatten:
+        C_arrays_full = C_arrays
+        cpx_phase0, _eigenvalues, _estimator, _crlb_std_dev = (
+            process_coherence_matrices(
+                C_arrays_full,
+                use_evd=True,
+                compute_crlb=False,
+            )
+        )
+        C_arrays_flat = covariance.estimate_stack_covariance(
+            slc_stack * jnp.moveaxis(cpx_phase0, -1, 0).conj(), half_window
+        )
+        # Just use the coherence values:
+        C_arrays = jnp.abs(C_arrays_flat) * jnp.exp(1j * jnp.angle(C_arrays_full))
+
     ns = slc_stack.shape[0]
     if baseline_lag:
         u_rows, u_cols = jnp.triu_indices(ns, baseline_lag)

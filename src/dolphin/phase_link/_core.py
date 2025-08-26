@@ -326,27 +326,39 @@ def run_cpl(
         shape = (out_rows, out_cols)
 
     """
-    C_arrays = covariance.estimate_stack_covariance(
-        slc_stack,
-        half_window,
-        strides,
-        neighbor_arrays=neighbor_arrays,
-    )
+    from dolphin.utils import upsample_nearest
 
     if flatten:
-        C_arrays_full = C_arrays
-        cpx_phase0, _eigenvalues, _estimator, _crlb_std_dev = (
-            process_coherence_matrices(
-                C_arrays_full,
-                use_evd=True,
-                compute_crlb=False,
-            )
+        C_arrays_full = covariance.estimate_stack_covariance(
+            slc_stack,
+            half_window,
+            # Strides(1, 1),
+            strides,
+            neighbor_arrays=neighbor_arrays,
         )
+        cpx_phase0, _, _, _ = process_coherence_matrices(
+            C_arrays_full,
+            use_evd=True,
+            compute_crlb=False,
+        )
+        cpx_phase0 = jnp.moveaxis(cpx_phase0, -1, 0)
+        cpx_up = upsample_nearest(cpx_phase0, slc_stack.shape[1:], use_jax=True)
         C_arrays_flat = covariance.estimate_stack_covariance(
-            slc_stack * jnp.moveaxis(cpx_phase0, -1, 0).conj(), half_window
+            slc_stack * cpx_up.conj(),
+            half_window,
+            strides,
+            neighbor_arrays=neighbor_arrays,
         )
         # Just use the coherence values:
         C_arrays = jnp.abs(C_arrays_flat) * jnp.exp(1j * jnp.angle(C_arrays_full))
+        del C_arrays_flat, C_arrays_full, cpx_phase0
+    else:
+        C_arrays = covariance.estimate_stack_covariance(
+            slc_stack,
+            half_window,
+            strides,
+            neighbor_arrays=neighbor_arrays,
+        )
 
     ns = slc_stack.shape[0]
     if baseline_lag:

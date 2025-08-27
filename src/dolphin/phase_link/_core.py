@@ -82,6 +82,8 @@ def run_phase_linking(
     baseline_lag: Optional[int] = None,
     first_real_slc_idx: int = 0,
     compute_crlb: bool = True,
+    use_defringing: bool = True,
+    # defringe_mode: Literal["off", "coh_only", "deramp_and_addback"] = "off",
 ) -> PhaseLinkOutput:
     """Estimate the linked phase for a stack of SLCs.
 
@@ -145,6 +147,9 @@ def run_phase_linking(
         By default 0.
     compute_crlb : bool, optional
         Whether to compute the CRLB, by default True
+    use_defringing : bool, optional
+        Whether to apply defringing before coherence estimation.
+        By default False.
 
     Returns
     -------
@@ -202,6 +207,8 @@ def run_phase_linking(
         baseline_lag=baseline_lag,
         first_real_slc_idx=first_real_slc_idx,
         compute_crlb=compute_crlb,
+        use_defringing=use_defringing,
+        # defringe_mode=defringe_mode,
     )
 
     # Get the smaller, looked versions of the masks
@@ -261,6 +268,8 @@ def run_cpl(
     baseline_lag: Optional[int] = None,
     first_real_slc_idx: int = 0,
     compute_crlb: bool = True,
+    use_defringing: bool = False,
+    # defringe_mode: Literal["off", "coh_only"] = "off",
 ) -> PhaseLinkOutput:
     """Run the Combined Phase Linking (CPL) algorithm.
 
@@ -303,6 +312,9 @@ def run_cpl(
         By default 0.
     compute_crlb : bool, optional
         Whether to compute the CRLB, by default True
+    use_defringing : bool, optional
+        Whether to apply defringing before coherence estimation.
+        By default False.
 
     Returns
     -------
@@ -328,6 +340,7 @@ def run_cpl(
         half_window,
         strides,
         neighbor_arrays=neighbor_arrays,
+        use_defringing=use_defringing,
     )
     ns = slc_stack.shape[0]
     if baseline_lag:

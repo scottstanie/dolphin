@@ -16,17 +16,27 @@ from jax.typing import ArrayLike
 from dolphin._types import HalfWindow, Strides
 from dolphin.utils import compute_out_shape
 
+from .defringing import (
+    coh_mat_single_defringe,
+    deramp_window_for_cov,
+    estimate_and_remove_fringes,
+)
+
+# from .defringing import deramp_window_for_cov
+
 DEFAULT_STRIDES = Strides(1, 1)
 
 __all__ = ["coh_mat_single", "estimate_stack_covariance"]
 
 
-@partial(jit, static_argnames=["half_window", "strides"])
+@partial(jit, static_argnames=["half_window", "strides", "use_defringing"])
 def estimate_stack_covariance(
     slc_stack: ArrayLike,
     half_window: HalfWindow,
     strides: Strides = DEFAULT_STRIDES,
-    neighbor_arrays: Optional[np.ndarray] = None,
+    neighbor_arrays: Optional[np.ndarray | Array] = None,
+    use_defringing: bool = False,
+    # defringe_mode: Literal["off", "coh_only"] = "off",
 ) -> Array:
     """Estimate the linked phase at all pixels of `slc_stack`.
 
@@ -43,6 +53,10 @@ def estimate_stack_covariance(
     neighbor_arrays : np.ndarray, optional
         The neighbor arrays to use for SHP, shape = (n_rows, n_cols, *window_shape).
         If None, a rectangular window is used. By default None.
+    use_defringing : bool, optional
+        Whether to apply defringing before coherence estimation.
+        This can improve coherence quality in areas with strong fringes.
+        By default False.
 
     Returns
     -------
@@ -86,8 +100,17 @@ def estimate_stack_covariance(
         """Get slices for, and process, one pixel's window."""
         in_r = in_r_start + out_r * row_strides
         in_c = in_c_start + out_c * col_strides
-        # Get a 3D slice, size (row_window, col_window, nslc)
+        # Get a 3D slice, size (nslc, row_window, col_window)
         slc_window = _get_stack_window(slc_stack, in_r, in_c, half_row, half_col)
+
+        # NEW: Apply defringing if requested
+        if use_defringing:
+            # slc_window, _ = estimate_and_remove_fringes(
+            #     slc_window, rows=half_window[0], cols=half_window[1], use_weights=True
+            # )
+            # if defringe_mode == "coh_only":
+            slc_window = deramp_window_for_cov(slc_window)
+
         # Reshape to be (nslc, num_samples)
         slc_samples = slc_window.reshape(nslc, -1)
         cur_neighbors = neighbor_arrays[out_r, out_c, :, :]
@@ -168,3 +191,91 @@ def _get_stack_window(
     csize = 2 * half_col + 1
     slice_sizes = (dsize, rsize, csize)
     return lax.dynamic_slice(stack, start_indices, slice_sizes)
+
+
+@partial(jit, static_argnames=("half_window", "strides", "use_defringing"))
+def estimate_stack_covariance_defringe(
+    slc_stack: ArrayLike,
+    half_window: tuple[int, int],
+    strides: tuple[int, int] = (1, 1),
+    neighbor_arrays: Optional[ArrayLike] = None,
+    use_defringing: bool = True,
+) -> Array:
+    """Estimate covariance with optional defringing.
+
+    This is a wrapper around the standard covariance estimation
+    that optionally applies defringing before computing coherence.
+
+    Parameters
+    ----------
+    slc_stack : ArrayLike
+        SLC stack, shape (n_slc, n_rows, n_cols)
+    half_window : tuple[int, int]
+        Half window size (y, x)
+    strides : tuple[int, int]
+        Strides for sliding window
+    neighbor_arrays : ArrayLike, optional
+        Neighbor mask arrays
+    use_defringing : bool
+        Whether to apply defringing
+
+    Returns
+    -------
+    C_arrays : Array
+        Covariance matrices, shape (out_rows, out_cols, n_slc, n_slc)
+
+    """
+    nslc, rows, cols = slc_stack.shape
+
+    row_strides = strides[0]
+    col_strides = strides[1]
+    half_row = half_window[0]
+    half_col = half_window[1]
+
+    out_rows, out_cols = compute_out_shape((rows, cols), strides)
+
+    in_r_start = row_strides // 2
+    in_c_start = col_strides // 2
+
+    if neighbor_arrays is None:
+        neighbor_arrays = jnp.ones(
+            (out_rows, out_cols, 2 * half_window[0] + 1, 2 * half_window[1] + 1),
+            dtype=bool,
+        )
+
+    def _process_row_col(out_r, out_c):
+        """Process one output pixel."""
+        in_r = in_r_start + out_r * row_strides
+        in_c = in_c_start + out_c * col_strides
+
+        # Get window slice
+        slc_window = _get_stack_window(slc_stack, in_r, in_c, half_row, half_col)
+
+        if use_defringing:
+            # Apply defringing to the window
+            slc_window_deramped, _ = estimate_and_remove_fringes(
+                slc_window, use_weights=True
+            )
+            slc_samples = slc_window_deramped.reshape(nslc, -1)
+        else:
+            slc_samples = slc_window.reshape(nslc, -1)
+
+        cur_neighbors = neighbor_arrays[out_r, out_c, :, :]
+        neighbor_mask = cur_neighbors.ravel()
+
+        # Use the defringing version if requested
+        if use_defringing:
+            return coh_mat_single_defringe(slc_samples, neighbor_mask, deramp=False)
+        else:
+            return coh_mat_single(slc_samples, neighbor_mask)
+
+    # Create output grid
+    out_r_indices, out_c_indices = jnp.meshgrid(
+        jnp.arange(out_rows), jnp.arange(out_cols), indexing="ij"
+    )
+
+    # Vectorize processing
+    _process_2d = vmap(_process_row_col)
+    _process_3d = vmap(_process_2d)
+
+    return _process_3d(out_r_indices, out_c_indices)

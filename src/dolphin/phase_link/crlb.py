@@ -269,15 +269,16 @@ def demo_from_slc_stack(  # noqa: D103
     aps_variance: float = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     from dolphin import io
-    from dolphin.phase_link import covariance
+    from dolphin.phase_link import covariance, defringing
 
     hwr, hwc = hw
     reader = io.VRTStack.from_vrt_file(slc_vrt_filename)
     r0, c0 = center_pixel
-    samples = reader[:, r0 - hwr : r0 + hwr, c0 - hwc : c0 + hwc].reshape(
-        len(reader), -1
-    )
+    slc_window = reader[:, r0 - hwr : r0 + hwr, c0 - hwc : c0 + hwc]
+    slc_window = defringing.deramp_window_for_cov(slc_window)
+    samples = slc_window.reshape(len(reader), -1)
     C = covariance.coh_mat_single(samples)
+    # C = covariance.coh_mat_single_defringe(samples)
     # num_looks = (2 * hwr + 1) * (2 * hwc + 1)
     num_looks = np.sqrt(hwr * hwc)
     return C, compute_lower_bound_std(C, num_looks, aps_variance=aps_variance)

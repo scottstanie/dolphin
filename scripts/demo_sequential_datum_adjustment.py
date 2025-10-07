@@ -10,16 +10,16 @@ from __future__ import annotations
 
 import logging
 
+import jax.random
 import numpy as np
+from synth import covariance, crlb
+from synth.config import CustomCoherence
 
 from dolphin import HalfWindow
 from dolphin.phase_link._compress import compress
 from dolphin.phase_link._core import run_phase_linking
 
 logger = logging.getLogger(__name__)
-import jax.random
-from synth import covariance, crlb
-from synth.config import CustomCoherence
 
 
 def generate_synthetic_slc_stack(
@@ -31,13 +31,15 @@ def generate_synthetic_slc_stack(
     ----------
     shape : tuple[int, int, int]
         Shape of the output stack (n_images, n_rows, n_cols)
+    num_looks : float
+        Number of looks to use for CRLB computation
 
     Returns
     -------
     noisy_stack : ndarray
         Complex SLC stack with correlated Gaussian random data
     crlb_std_devs : ndarray
-        CRLB
+        CRLB standard deviations
 
     """
     coh = CustomCoherence(gamma_inf=0.1, tau0=36)
@@ -79,7 +81,7 @@ def run(
     total_shape: tuple[int, int, int] = (100, 200, 200),
     ministack_size: int = 20,
     half_window: tuple[int, int] = (5, 5),
-) -> tuple[np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run sequential datum adjustment demonstration.
 
     Parameters
@@ -93,6 +95,8 @@ def run(
 
     Returns
     -------
+    crlb_std_devs : np.ndarray
+        CRLB standard deviations
     rmse_out_phases : np.ndarray
         RMSE of the phases after datum adjustment
     rmse_out_phases_new : np.ndarray
@@ -218,7 +222,26 @@ def run(
     return crlb_std_devs, rmse_out_phases, rmse_out_phases_new
 
 
-def plot_results(out_phases, out_phases_new, crlb_std_devs):
+def plot_results(
+    out_phases: np.ndarray, out_phases_new: np.ndarray, crlb_std_devs: np.ndarray
+) -> object:
+    """Plot comparison of datum adjustment and near-real-time results.
+
+    Parameters
+    ----------
+    out_phases : np.ndarray
+        Output phases with datum adjustment
+    out_phases_new : np.ndarray
+        Output phases without datum adjustment
+    crlb_std_devs : np.ndarray
+        CRLB standard deviations
+
+    Returns
+    -------
+    object
+        Matplotlib figure
+
+    """
     import ultraplot as uplt
 
     fig1, ax1 = uplt.subplots()
@@ -237,8 +260,8 @@ if __name__ == "__main__":
     # ms_sizes = [20, 10]
     ms_sizes = [20]
     rmses = [run(ministack_size=ms) for ms in ms_sizes]
-    avg_da = np.mean(np.stack([r_da for (_, r_da, r_new) in rmses]), axis=0)
-    avg_new = np.mean(np.stack([r_new for (_, r_da, r_new) in rmses]), axis=0)
+    avg_da = np.mean(np.stack([r_da for (_crlb, r_da, _r_new) in rmses]), axis=0)
+    avg_new = np.mean(np.stack([r_new for (_crlb, _r_da, r_new) in rmses]), axis=0)
 
     fig, ax = uplt.subplots(refwidth=4, refheight=3)
     ax.plot(rmses[0][0], label="CRLB", color="k", marker="s")

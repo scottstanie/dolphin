@@ -168,3 +168,116 @@ def _get_stack_window(
     csize = 2 * half_col + 1
     slice_sizes = (dsize, rsize, csize)
     return lax.dynamic_slice(stack, start_indices, slice_sizes)
+
+
+@partial(jit, static_argnames=["half_window", "strides", "oversample"])
+def estimate_stack_covariance_crossmul(
+    slc_stack: jnp.ndarray,
+    half_window,
+    strides,
+    neighbor_arrays: jnp.ndarray | None = None,
+    oversample: int = 2,
+) -> jnp.ndarray:
+    """Drop-in variant that uses range upsample→crossmul→lookdown inside each window."""
+    if neighbor_arrays is None:
+        rows, cols = slc_stack.shape[1:]
+        full_window = (2 * half_window.y + 1, 2 * half_window.x + 1)
+        neighbor_arrays = jnp.ones((rows, cols, *full_window), dtype=bool)
+
+    nslc, rows, cols = slc_stack.shape
+    row_strides, col_strides = strides.y, strides.x
+    half_row, half_col = half_window.y, half_window.x
+
+    out_rows = (rows + row_strides - 1) // row_strides
+    out_cols = (cols + col_strides - 1) // col_strides
+    in_r0 = row_strides // 2
+    in_c0 = col_strides // 2
+
+    def _get_win(r_out, c_out):
+        r = in_r0 + r_out * row_strides
+        c = in_c0 + c_out * col_strides
+        r0 = lax.clamp(0, r - half_row, r)
+        c0 = lax.clamp(0, c - half_col, c)
+        # slice: (nslc, H, W)
+        H = 2 * half_row + 1
+        W = 2 * half_col + 1
+        win = lax.dynamic_slice(slc_stack, (0, r0, c0), (nslc, H, W))
+        mask2d = neighbor_arrays[r_out, c_out, :, :]
+        return coh_mat_window_crossmul(win, mask2d, oversample=oversample)
+
+    R, C = jnp.meshgrid(jnp.arange(out_rows), jnp.arange(out_cols), indexing="ij")
+    f2 = vmap(vmap(_get_win, in_axes=(0, None)), in_axes=(None, 0))
+    return f2(R, C)  # shape: (out_rows, out_cols, nslc, nslc)
+
+
+def _fft_upsample_range(x: jnp.ndarray, k: int) -> jnp.ndarray:
+    """Zero-pad complex FFT along last axis by integer factor k. Scales by k."""
+    n = x.shape[-1]
+    X = jnp.fft.fftshift(jnp.fft.fft(x, axis=-1), axes=-1)
+    pad = (k - 1) * n
+    left = pad // 2
+    right = pad - left
+    X_up = jnp.pad(X, [(0, 0)] * (x.ndim - 1) + [(left, right)], mode="constant")
+    y = jnp.fft.ifft(jnp.fft.ifftshift(X_up, axes=-1), axis=-1) * k
+    return y
+
+
+def _lookdown_range(y: jnp.ndarray, k: int) -> jnp.ndarray:
+    """Average consecutive k samples along last axis."""
+    n_up = y.shape[-1]
+    n = n_up // k
+    y = y[..., : n * k]
+    y = y.reshape(*y.shape[:-1], n, k).sum(axis=-1) / k
+    return y
+
+
+def _lookdown_shift_phase(n_cols: int, k: int) -> jnp.ndarray:
+    """Linear-phase correction for upsample→lookdown shift (ISCE3-style).
+
+    shift = (1 - 1/k)/2 samples. Phase ramp: exp(-i*2π*shift * f), implemented per-column index.
+    """
+    shift = (1.0 - 1.0 / k) / 2.0
+    idx = jnp.arange(n_cols, dtype=jnp.float32)
+    phase = -2.0 * jnp.pi * shift * idx / n_cols
+    return jnp.exp(1j * phase)
+
+
+@partial(jit, static_argnames=["oversample"])
+def coh_mat_window_crossmul(
+    slc_win: jnp.ndarray,
+    neighbor_mask_2d: jnp.ndarray | None = None,
+    oversample: int = 2,
+) -> jnp.ndarray:
+    """Compute (nslc,nslc) coherence from a window using upsample, crossmul, looks.
+
+    slc_win: (nslc, H, W) complex
+    neighbor_mask_2d: (H, W) bool (True = keep), optional
+    """
+    nslc, H, W = slc_win.shape
+    k = oversample
+
+    # optional window mask
+    m = jnp.ones((H, W)) if neighbor_mask_2d is None else neighbor_mask_2d
+    slc_win = jnp.where(m[None, ...], slc_win, 0)
+
+    # upsample each SLC in range
+    slc_up = _fft_upsample_range(slc_win, k)  # (nslc, H, W*k)
+
+    # cross-multiply all pairs at upsampled rate
+    # (nslc, nslc, H, W*k)
+    numer_up = slc_up[:, None, :, :] * jnp.conj(slc_up[None, :, :, :])
+
+    # look-down (average over k samples) back to native W
+    numer = _lookdown_range(numer_up, k)  # (nslc, nslc, H, W)
+    # apply the small linear-phase correction along range
+    phase = _lookdown_shift_phase(W, k)  # (W,)
+    numer = numer * phase[None, None, None, :]  # broadcast over (nslc, nslc, H, W)
+
+    # average over window pixels to get covariance
+    numer = numer.reshape(nslc, nslc, -1).sum(axis=-1)  # (nslc, nslc)
+
+    # normalize to coherence
+    power = jnp.sum(jnp.abs(slc_win.reshape(nslc, -1)) ** 2, axis=1)
+    denom = jnp.sqrt(power[:, None] * power[None, :])
+    coh = jnp.where(denom > 1e-6, numer / denom, 0.0 + 0.0j)
+    return coh

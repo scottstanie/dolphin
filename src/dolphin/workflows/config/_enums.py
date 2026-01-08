@@ -24,3 +24,4 @@ class UnwrapMethod(str, Enum):
     PHASS = "phass"
     SPURT = "spurt"
     WHIRLWIND = "whirlwind"
+    SPURS = "spurs"

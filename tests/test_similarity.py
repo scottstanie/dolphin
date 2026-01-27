@@ -39,13 +39,18 @@ def test_get_circle_idxs():
 
 
 def test_pixel_similarity():
-    x1, x2 = np.exp(1j * np.angle(np.random.randn(2, 50) + np.random.randn(2, 50) * 1j))
-    sim = similarity.phase_similarity(x1[:5], x2[:5])
-    assert -1 <= sim <= 1
+    np.random.seed(12)
+    phases1, phases2 = (
+        np.random.uniform(2 * np.pi, size=(50,)),
+        np.random.uniform(2 * np.pi, size=(50,)),
+    )
+    x1, x2 = np.exp(1j * phases1), np.exp(1j * phases2)
+    small_sims = [similarity.phase_similarity(x1[:n], x2[:n]) for n in range(2, 6)]
+    assert all(-1 <= sim <= 1 for sim in small_sims)
 
     # For random noise, the similarity should be closer to zero with more data
     sim_full = similarity.phase_similarity(x1, x2)
-    assert np.abs(sim_full) < np.abs(sim)
+    assert np.abs(sim_full) < np.mean(np.abs(small_sims))
 
     # self similarity == 1
     assert similarity.phase_similarity(x1, x1) == 1
@@ -93,11 +98,27 @@ class TestStackSimilarity:
     def test_max_similarity_masked(self, ifg_stack, radius, func):
         rows, cols = ifg_stack.shape[-2:]
         mask = np.random.rand(rows, cols).round().astype(bool)
+        mask = np.array(
+            [
+                [True, False, False, True, False, False, False, False, True, True],
+                [False, True, True, True, True, True, True, True, False, True],
+                [True, False, False, False, False, True, True, False, True, False],
+                [True, True, True, True, True, False, True, False, False, False],
+                [False, False, True, True, True, True, True, True, False, True],
+            ]
+        )
+        # Note: bottom right is surrounded by nans, so it will flip to a nan similarity
+
         sim_func = getattr(similarity, f"{func}_similarity")
         sim = sim_func(ifg_stack, search_radius=radius, mask=mask)
 
         assert ((np.nan_to_num(sim) > -1) & (np.nan_to_num(sim) < 1)).all()
-        assert np.all(np.isnan(sim) == (~mask))
+        # The nan counts should be higher
+        assert ~np.all(np.isnan(sim))
+        assert np.isnan(sim).sum() >= (~mask).sum(), f"{sim = }, {mask = }"
+        # The bottom right
+        if radius == 2:
+            assert np.isnan(sim[-1, -1])
 
     def test_create_similarity(self, tmp_path, slc_file_list):
         outfile = tmp_path / "med_sim.tif"

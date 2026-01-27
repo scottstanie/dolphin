@@ -39,6 +39,8 @@ class StitchedOutputs:
     """List of Paths to Cramer Rao Lower Bound (CRLB) files created."""
     closure_phase_files: list[Path]
     """List of Paths to closure phase files created."""
+    nearest_coherence_files: list[Path]
+    """List of Paths to nearest-N coherence magnitude files created."""
     ps_file: Path
     """Path to ps mask file created."""
     amp_dispersion_file: Path
@@ -52,6 +54,7 @@ def run(
     ps_file_list: Sequence[Path],
     crlb_file_list: Sequence[Path],
     closure_phase_file_list: Sequence[Path],
+    nearest_coherence_file_list: Sequence[Path],
     amp_dispersion_list: Sequence[Path],
     shp_count_file_list: Sequence[Path],
     similarity_file_list: Sequence[Path],
@@ -77,6 +80,8 @@ def run(
         Sequence of paths to the (looked) Cramer Rao Lower Bound (CRLB) files.
     closure_phase_file_list : Sequence[Path]
         Sequence of paths to the (looked) closure phase files.
+    nearest_coherence_file_list : Sequence[Path]
+        Sequence of paths to the nearest-N coherence magnitude files.
     amp_dispersion_list : Sequence[Path]
         Sequence of paths to the (looked) amplitude dispersion files.
     shp_count_file_list : Sequence[Path]
@@ -216,6 +221,20 @@ def run(
     )
     stitched_closure_phase_files = list(date_to_closure_phase_path.values())
 
+    # Stitch the nearest coherence files
+    date_to_nearest_coh_path = stitching.merge_by_date(
+        image_file_list=nearest_coherence_file_list,
+        file_date_fmt=file_date_fmt,
+        output_dir=stitched_ifg_dir,
+        output_prefix="nearest_coh_",
+        options=EXTRA_COMPRESSED_TIFF_OPTIONS,
+        out_bounds=out_bounds,
+        out_bounds_epsg=output_options.bounds_epsg,
+        dest_epsg=output_options.epsg,
+        num_workers=num_workers,
+    )
+    stitched_nearest_coherence_files = list(date_to_nearest_coh_path.values())
+
     # Stitch the amp dispersion files
     stitched_amp_disp_file = stitched_ifg_dir / "amp_dispersion_looked.tif"
     if not stitched_amp_disp_file.exists():
@@ -247,6 +266,7 @@ def run(
         stitched_similarity_files,
         stitched_crlb_files,
         stitched_closure_phase_files,
+        stitched_nearest_coherence_files,
         stitched_ps_file,
         stitched_amp_disp_file,
     )

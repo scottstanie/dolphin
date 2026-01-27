@@ -18,6 +18,7 @@ from dolphin.utils import take_looks
 from . import covariance, crlb, metrics
 from ._closure_phase import compute_nearest_closure_phases_batch
 from ._eigenvalues import eigh_largest_stack, eigh_smallest_stack
+from ._nearest_coherence import make_batch_extractor
 from ._ps_filling import fill_ps_pixels
 
 logger = logging.getLogger("dolphin")
@@ -63,6 +64,9 @@ class PhaseLinkOutput(NamedTuple):
     closure_phases: np.ndarray
     """The closure phases at each pixel, for N-2 images."""
 
+    nearest_coherence: np.ndarray
+    """The nearest-N coherence magnitudes at each pixel."""
+
 
 def run_phase_linking(
     slc_stack: ArrayLike,
@@ -83,6 +87,7 @@ def run_phase_linking(
     first_real_slc_idx: int = 0,
     compute_crlb: bool = True,
     flatten: bool = True,
+    nearest_n_coherence: int = 0,
 ) -> PhaseLinkOutput:
     """Estimate the linked phase for a stack of SLCs.
 
@@ -146,6 +151,13 @@ def run_phase_linking(
         By default 0.
     compute_crlb : bool, optional
         Whether to compute the CRLB, by default True
+    flatten : bool, optional
+        If True, perform phase flattening before coherence estimation to
+        improve accuracy of coherence magnitudes, by default True.
+    nearest_n_coherence : int, optional
+        Number of nearest coherence diagonals to extract and return.
+        0 (default) means don't extract. 1 gives first off-diagonal
+        (nearest neighbor coherences), 2 gives first 2 diagonals, etc.
 
     Returns
     -------
@@ -204,6 +216,7 @@ def run_phase_linking(
         first_real_slc_idx=first_real_slc_idx,
         compute_crlb=compute_crlb,
         flatten=flatten,
+        nearest_n_coherence=nearest_n_coherence,
     )
 
     # Get the smaller, looked versions of the masks
@@ -248,6 +261,7 @@ def run_phase_linking(
         estimator=np.asarray(cpl_out.estimator),
         crlb_std_dev=np.array(cpl_out.crlb_std_dev),
         closure_phases=np.asarray(cpl_out.closure_phases),
+        nearest_coherence=np.asarray(cpl_out.nearest_coherence),
     )
 
 
@@ -264,6 +278,7 @@ def run_cpl(
     flatten: bool = True,
     first_real_slc_idx: int = 0,
     compute_crlb: bool = True,
+    nearest_n_coherence: int = 0,
 ) -> PhaseLinkOutput:
     """Run the Combined Phase Linking (CPL) algorithm.
 
@@ -306,6 +321,13 @@ def run_cpl(
         By default 0.
     compute_crlb : bool, optional
         Whether to compute the CRLB, by default True
+    flatten : bool, optional
+        If True, perform phase flattening before coherence estimation to
+        improve accuracy of coherence magnitudes, by default True.
+    nearest_n_coherence : int, optional
+        Number of nearest coherence diagonals to extract and return.
+        0 (default) means don't extract. 1 gives first off-diagonal
+        (nearest neighbor coherences), 2 gives first 2 diagonals, etc.
 
     Returns
     -------
@@ -368,6 +390,16 @@ def run_cpl(
         C_arrays = C_arrays.at[:, :, l_rows, l_cols].set(0.0 + 0j)
 
     closure_phases = compute_nearest_closure_phases_batch(C_arrays)
+
+    # Extract nearest-N coherence magnitudes if requested
+    if nearest_n_coherence > 0:
+        extract_coherences = make_batch_extractor(nearest_n_coherence)
+        nearest_coherence = extract_coherences(C_arrays)
+    else:
+        # Return empty array if not requested
+        rows, cols = C_arrays.shape[:2]
+        nearest_coherence = jnp.zeros((rows, cols, 0), dtype=jnp.float32)
+
     # For a more conservative uncertainty estimate, use a smaller number of looks
     # rather than `num_looks = (2 * half_window[0] + 1) * (2 * half_window[1] + 1)`
     num_looks = math.sqrt(half_window[0] * half_window[1])
@@ -404,6 +436,7 @@ def run_cpl(
         estimator=estimator,
         crlb_std_dev=crlb_std_dev_reshaped,
         closure_phases=closure_phases,
+        nearest_coherence=nearest_coherence,
     )
 
 

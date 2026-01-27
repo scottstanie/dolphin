@@ -62,6 +62,7 @@ def run_wrapped_phase_single(
     similarity_nearest_n: int | None = None,
     write_closure_phase: bool = True,
     write_crlb: bool = True,
+    nearest_n_coherence: int = 0,
     block_shape: tuple[int, int] = (512, 512),
     baseline_lag: Optional[int] = None,
     max_workers: int = 1,
@@ -144,6 +145,19 @@ def run_wrapped_phase_single(
             strides=strides,
             dtype="float32",
             output_folder=closure_phases_output_folder,
+            like_filename=like_filename,
+        )
+
+    nearest_coherence_files: list[Path] = []
+    if nearest_n_coherence > 0:
+        nearest_coh_output_folder = output_folder / "nearest_coherence"
+        nearest_coh_output_folder.mkdir(exist_ok=True)
+        nearest_coherence_files = setup_output_folder(
+            ministack=ministack,
+            name_generator=_make_name_nearest_coherence(nearest_n_coherence),
+            strides=strides,
+            dtype="float32",
+            output_folder=nearest_coh_output_folder,
             like_filename=like_filename,
         )
 
@@ -262,6 +276,7 @@ def run_wrapped_phase_single(
                 avg_mag=amp_mean[in_rows, in_cols] if amp_mean is not None else None,
                 first_real_slc_idx=ministack.first_real_slc_idx,
                 compute_crlb=write_crlb,
+                nearest_n_coherence=nearest_n_coherence,
             )
         except PhaseLinkRuntimeError as e:
             # note: this is a warning instead of info, since it should
@@ -327,6 +342,16 @@ def run_wrapped_phase_single(
                     ]
                     writer.queue_write(
                         closure_img, closure_file, out_rows.start, out_cols.start
+                    )
+
+            if nearest_n_coherence > 0:
+                # Save nearest coherence magnitudes
+                for i, coh_file in enumerate(nearest_coherence_files):
+                    coh_img = pl_output.nearest_coherence[
+                        out_trim_rows, out_trim_cols, i
+                    ]
+                    writer.queue_write(
+                        coh_img, coh_file, out_rows.start, out_cols.start
                     )
 
             # Save the compressed SLC block
@@ -398,6 +423,10 @@ def run_wrapped_phase_single(
     if write_closure_phase:
         logger.info("Repacking closure phase files for more compression")
         io.repack_rasters(closure_phase_files, keep_bits=10)
+    if nearest_n_coherence > 0:
+        logger.info("Repacking nearest coherence files for more compression")
+        # Coherence is ~100 possible values (0.00 to 1.00), so 16 bits is plenty
+        io.repack_rasters(nearest_coherence_files, use_16_bits=True)
 
     written_comp_slc = output_files["compressed_slc"]
     ccslc_info = ministack.get_compressed_slc_info()
@@ -468,6 +497,37 @@ def _name_closure_phases(ministack: MiniStackInfo) -> list[str]:
     num_closure_phases = len(date_strs) - 2
     date_triplets = ["_".join(date_strs[i : i + 3]) for i in range(num_closure_phases)]
     return [f"closure_phase_{triplet}.tif" for triplet in date_triplets]
+
+
+def _make_name_nearest_coherence(n: int) -> Callable[[MiniStackInfo], list[str]]:
+    """Create a function that generates nearest coherence filenames.
+
+    Parameters
+    ----------
+    n : int
+        Number of diagonals to extract (bandwidth).
+
+    Returns
+    -------
+    Callable[[MiniStackInfo], list[str]]
+        Function that generates filenames for the nearest coherence outputs.
+
+    """
+    from dolphin.phase_link._nearest_coherence import get_nearest_coherence_ifg_pairs
+
+    def _name_nearest_coherence(ministack: MiniStackInfo) -> list[str]:
+        date_strs = ministack.get_date_str_list()
+        # Get only the first date in case of compressed
+        date_strs = [d.split("_")[0] for d in date_strs]
+        num_slcs = len(date_strs)
+        pairs = get_nearest_coherence_ifg_pairs(num_slcs, n)
+        filenames = []
+        for ref_idx, sec_idx in pairs:
+            date_pair = f"{date_strs[ref_idx]}_{date_strs[sec_idx]}"
+            filenames.append(f"nearest_coh_{date_pair}.tif")
+        return filenames
+
+    return _name_nearest_coherence
 
 
 def setup_output_folder(

@@ -55,6 +55,7 @@ def run_wrapped_phase_sequential(
     write_crlb: bool = True,
     block_shape: tuple[int, int] = (512, 512),
     baseline_lag: Optional[int] = None,
+    flatten: bool = True,
     max_workers: int = 1,
     **tqdm_kwargs,
 ) -> tuple[
@@ -142,6 +143,7 @@ def run_wrapped_phase_sequential(
                 write_crlb=write_crlb,
                 block_shape=block_shape,
                 baseline_lag=baseline_lag,
+                flatten=flatten,
                 max_workers=max_workers,
                 **tqdm_kwargs,
             )

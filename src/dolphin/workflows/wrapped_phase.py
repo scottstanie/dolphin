@@ -250,6 +250,7 @@ def run(
             cslc_date_fmt=cfg.input_options.cslc_date_fmt,
             write_crlb=cfg.phase_linking.write_crlb,
             write_closure_phase=cfg.phase_linking.write_closure_phase,
+            flatten=cfg.phase_linking.flatten,
             block_shape=cfg.worker_settings.block_shape,
             max_workers=max_workers,
             **kwargs,

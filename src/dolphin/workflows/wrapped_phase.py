@@ -257,6 +257,7 @@ def run(
             write_crlb=cfg.phase_linking.write_crlb,
             write_closure_phase=cfg.phase_linking.write_closure_phase,
             nearest_n_coherence=cfg.phase_linking.nearest_n_coherence,
+            flatten=cfg.phase_linking.flatten,
             block_shape=cfg.worker_settings.block_shape,
             max_workers=max_workers,
             **kwargs,

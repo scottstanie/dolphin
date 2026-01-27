@@ -65,6 +65,7 @@ def run_wrapped_phase_single(
     nearest_n_coherence: int = 0,
     block_shape: tuple[int, int] = (512, 512),
     baseline_lag: Optional[int] = None,
+    flatten: bool = True,
     max_workers: int = 1,
     **tqdm_kwargs,
 ):
@@ -277,6 +278,7 @@ def run_wrapped_phase_single(
                 first_real_slc_idx=ministack.first_real_slc_idx,
                 compute_crlb=write_crlb,
                 nearest_n_coherence=nearest_n_coherence,
+                flatten=flatten,
             )
         except PhaseLinkRuntimeError as e:
             # note: this is a warning instead of info, since it should

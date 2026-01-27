@@ -179,6 +179,14 @@ class PhaseLinkingOptions(BaseModel, extra="forbid"):
             " possible values."
         ),
     )
+    flatten: bool = Field(
+        True,
+        description=(
+            "Flatten (deramp) each SLC within the multilook window before covariance"
+            " estimation. Removes local phase gradients to improve coherence estimates"
+            " in areas with strong fringes."
+        ),
+    )
 
 
 class InterferogramNetwork(BaseModel, extra="forbid"):

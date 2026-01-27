@@ -277,6 +277,7 @@ def upsample_nearest(
     arr: np.ndarray,
     output_shape: tuple[int, int],
     looks: Optional[tuple[int, int]] = None,
+    use_jax: bool = False,
 ) -> np.ndarray:
     """Upsample a numpy matrix by repeating blocks of (row_looks, col_looks).
 
@@ -296,6 +297,10 @@ def upsample_nearest(
         The upsampled array, shape = `output_shape`.
 
     """
+    if use_jax:
+        import jax.numpy as np
+    else:
+        import numpy as np
     in_rows, in_cols = arr.shape[-2:]
     out_rows, out_cols = output_shape[-2:]
     if (in_rows, in_cols) == (out_rows, out_cols):
@@ -315,7 +320,10 @@ def upsample_nearest(
 
     shape = (len(arr), out_rows, out_cols) if arr.ndim == 3 else (out_rows, out_cols)
     arr_out = np.zeros(shape=shape, dtype=arr.dtype)
-    arr_out[..., :out_r, :out_c] = arr_up[..., :out_r, :out_c]
+    if use_jax:
+        arr_out = arr_out.at[..., :out_r, :out_c].set(arr_up[..., :out_r, :out_c])
+    else:
+        arr_out[..., :out_r, :out_c] = arr_up[..., :out_r, :out_c]
     return arr_out
 
 

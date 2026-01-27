@@ -31,6 +31,9 @@ class WrappedPhaseOutput(NamedTuple):
         Paths to the output Cramer Rao Lower Bound (CRLB) files.
     closure_phase_files : list[Path]
         Paths to the output closure phase files.
+    nearest_coherence_files : list[Path]
+        Paths to the nearest-N coherence magnitude files. Empty if
+        nearest_n_coherence=0 was used.
     comp_slc_file_list : list[Path]
         Paths to the compressed SLC files created from each ministack.
     temp_coh_files : list[Path]
@@ -58,6 +61,7 @@ class WrappedPhaseOutput(NamedTuple):
     ifg_file_list: list[Path]
     crlb_files: list[Path]
     closure_phase_files: list[Path]
+    nearest_coherence_files: list[Path]
     comp_slc_file_list: list[Path]
     temp_coh_files: list[Path]
     ps_looked_file: Path
@@ -203,6 +207,7 @@ def run(
         similarity_files = sorted(pl_path.glob("*similarity*tif"))
         crlb_files = sorted(pl_path.rglob("crlb*tif"))
         closure_phase_files = sorted(pl_path.rglob("closure_phase*tif"))
+        nearest_coherence_files = sorted(pl_path.rglob("nearest_coh*tif"))
     else:
         logger.info(f"Running sequential EMI step in {pl_path}")
         kwargs = tqdm_kwargs | {"desc": f"Phase linking ({pl_path})"}
@@ -222,6 +227,7 @@ def run(
             phase_linked_slcs,
             crlb_files,
             closure_phase_files,
+            nearest_coherence_files,
             comp_slc_list,
             temp_coh_files,
             shp_count_files,
@@ -250,6 +256,8 @@ def run(
             cslc_date_fmt=cfg.input_options.cslc_date_fmt,
             write_crlb=cfg.phase_linking.write_crlb,
             write_closure_phase=cfg.phase_linking.write_closure_phase,
+            nearest_n_coherence=cfg.phase_linking.nearest_n_coherence,
+            flatten=cfg.phase_linking.flatten,
             block_shape=cfg.worker_settings.block_shape,
             max_workers=max_workers,
             **kwargs,
@@ -275,6 +283,7 @@ def run(
             existing_ifgs,
             crlb_files,
             closure_phase_files,
+            nearest_coherence_files,
             comp_slc_list,
             temp_coh_files,
             ps_looked_file,
@@ -322,6 +331,7 @@ def run(
         ifg_file_list,
         crlb_files,
         closure_phase_files,
+        nearest_coherence_files,
         comp_slc_list,
         temp_coh_files,
         ps_looked_file,

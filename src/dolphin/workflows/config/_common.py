@@ -168,6 +168,25 @@ class PhaseLinkingOptions(BaseModel, extra="forbid"):
             " the coherence matrix."
         ),
     )
+    nearest_n_coherence: int = Field(
+        0,
+        ge=0,
+        description=(
+            "Number of nearest coherence diagonals to extract and save. 0 means"
+            " don't save. 1 gives first off-diagonal (nearest neighbor coherences"
+            " matching traditional InSAR), 2 gives first 2 diagonals, etc. The"
+            " outputs are heavily compressed since coherence values are ~1/100"
+            " possible values."
+        ),
+    )
+    flatten: bool = Field(
+        True,
+        description=(
+            "Flatten (deramp) each SLC within the multilook window before covariance"
+            " estimation. Removes local phase gradients to improve coherence estimates"
+            " in areas with strong fringes."
+        ),
+    )
 
 
 class InterferogramNetwork(BaseModel, extra="forbid"):

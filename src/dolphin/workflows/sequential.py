@@ -16,7 +16,8 @@ from osgeo_utils import gdal_calc
 
 from dolphin import io
 from dolphin._types import Filename
-from dolphin.io import VRTStack
+from dolphin.io import RemoteHDF5StackReader, VRTStack
+from dolphin.io._remote import is_remote_url
 from dolphin.similarity import create_similarities
 from dolphin.stack import CompressedSlcPlan, MiniStackPlanner
 
@@ -30,7 +31,7 @@ __all__ = ["run_wrapped_phase_sequential"]
 
 def run_wrapped_phase_sequential(
     *,
-    slc_vrt_stack: VRTStack,
+    slc_vrt_stack: VRTStack | RemoteHDF5StackReader,
     output_folder: Path,
     ministack_size: int,
     half_window: dict,
@@ -102,6 +103,8 @@ def run_wrapped_phase_sequential(
     def already_processed(d: Path, search_ext: str = ".tif") -> bool:
         return d.exists() and len(list(d.glob(f"*{search_ext}"))) > 0
 
+    _is_remote = isinstance(slc_vrt_stack, RemoteHDF5StackReader)
+
     # Solve each ministack using the current chunk (and the previous compressed SLCs)
     for ministack in ministacks:
         cur_output_folder = ministack.output_folder
@@ -114,15 +117,25 @@ def run_wrapped_phase_sequential(
             logger.info(
                 f"Processing {len(cur_files)} SLCs. Output folder: {cur_output_folder}"
             )
-            cur_vrt = VRTStack(
-                cur_files,
-                outfile=output_folder / f"{start_end}.vrt",
-                sort_files=False,
-                subdataset=slc_vrt_stack.subdataset,
-            )
+            if _is_remote:
+                cur_reader: VRTStack | RemoteHDF5StackReader = (
+                    slc_vrt_stack.create_subset(
+                        file_list=cur_files,
+                        outfile=output_folder / f"{start_end}_reference.tif",
+                        sort_files=False,
+                        file_date_fmt=cslc_date_fmt,
+                    )
+                )
+            else:
+                cur_reader = VRTStack(
+                    cur_files,
+                    outfile=output_folder / f"{start_end}.vrt",
+                    sort_files=False,
+                    subdataset=slc_vrt_stack.subdataset,
+                )
 
             run_wrapped_phase_single(
-                vrt_stack=cur_vrt,
+                vrt_stack=cur_reader,
                 ministack=ministack,
                 output_folder=cur_output_folder,
                 half_window=half_window,

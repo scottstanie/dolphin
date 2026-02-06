@@ -109,6 +109,25 @@ def run(
         nodata_mask=nodata_mask,
         block_shape=cfg.worker_settings.block_shape,
     )
+
+    # Optionally run Point Coherence Estimation (PCE) refinement
+    pce_opts = cfg.ps_options.pce
+    if pce_opts.enabled:
+        pce_output = cfg.ps_options.pce._output_file
+        logger.info(f"Running Point Coherence Estimation, output: {pce_output}")
+        dolphin.ps.create_pce(
+            reader=vrt_stack,
+            output_file=pce_output,
+            amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
+            like_filename=vrt_stack.outfile,
+            amp_dispersion_prefilter=pce_opts.amp_dispersion_prefilter,
+            max_radius=pce_opts.max_radius,
+            coherence_threshold=pce_opts.coherence_threshold,
+            block_shape=cfg.worker_settings.block_shape,
+            nodata_mask=nodata_mask,
+        )
+        output_file_list.append(pce_output)
+
     # Save a looked version of the PS mask too
     strides_dict = cfg.output_options.strides.model_dump()
     if compute_looked:

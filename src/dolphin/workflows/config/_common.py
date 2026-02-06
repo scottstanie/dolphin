@@ -30,12 +30,58 @@ __all__ = [
     "InputOptions",
     "InterferogramNetwork",
     "OutputOptions",
+    "PceOptions",
     "PhaseLinkingOptions",
     "PsOptions",
     "Strides",
     "TimeseriesOptions",
     "WorkerSettings",
 ]
+
+
+class PceOptions(BaseModel, extra="forbid"):
+    """Options for Point Coherence Estimation (PCE) PS refinement.
+
+    PCE estimates per-pixel phase coherence from arc (double-difference)
+    coherences. It uses a loose amplitude dispersion mask to select
+    candidate pixels, builds a spatial graph of pixel-pair arcs, estimates
+    temporal coherence of each arc, and solves an overdetermined linear system
+    to recover individual pixel coherences.
+    """
+
+    enabled: bool = Field(
+        False,
+        description="Whether to run Point Coherence Estimation after amplitude"
+        " dispersion. When enabled, PCE refines PS selection using arc-based"
+        " coherence estimation.",
+    )
+    amp_dispersion_prefilter: float = Field(
+        0.5,
+        description=(
+            "Loose amplitude dispersion threshold for selecting candidate pixels"
+            " before PCE. A higher value than `amp_dispersion_threshold` to include"
+            " more candidates in the arc-based estimation."
+        ),
+        ge=0.0,
+    )
+    max_radius: int = Field(
+        3,
+        description=(
+            "Maximum Chebyshev distance (in pixels) to search for neighbors"
+            " when forming arcs between candidate pixels."
+        ),
+        ge=1,
+    )
+    coherence_threshold: float = Field(
+        0.5,
+        description=(
+            "Threshold on the estimated point coherence to label a pixel as a PS."
+            " Pixels with coherence >= threshold are selected."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    _output_file: Path = PrivateAttr(Path("PS/point_coherence.tif"))
 
 
 class PsOptions(BaseModel, extra="forbid"):
@@ -50,6 +96,10 @@ class PsOptions(BaseModel, extra="forbid"):
         0.25,
         description="Amplitude dispersion threshold to consider a pixel a PS.",
         ge=0.0,
+    )
+    pce: PceOptions = Field(
+        default_factory=PceOptions,
+        description="Point Coherence Estimation options for refining PS selection.",
     )
 
 

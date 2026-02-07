@@ -18,7 +18,7 @@ from dolphin.utils import take_looks
 from . import covariance, crlb, metrics
 from ._closure_phase import compute_nearest_closure_phases_batch
 from ._eigenvalues import eigh_largest_stack, eigh_smallest_stack
-from ._nearest_coherence import make_batch_extractor
+from ._multilooked_coherence import make_batch_extractor
 from ._ps_filling import fill_ps_pixels
 
 logger = logging.getLogger("dolphin")
@@ -64,7 +64,7 @@ class PhaseLinkOutput(NamedTuple):
     closure_phases: np.ndarray
     """The closure phases at each pixel, for N-2 images."""
 
-    nearest_coherence: np.ndarray
+    multilooked_coherence: np.ndarray
     """The nearest-N coherence magnitudes at each pixel."""
 
 
@@ -261,7 +261,7 @@ def run_phase_linking(
         estimator=np.asarray(cpl_out.estimator),
         crlb_std_dev=np.array(cpl_out.crlb_std_dev),
         closure_phases=np.asarray(cpl_out.closure_phases),
-        nearest_coherence=np.asarray(cpl_out.nearest_coherence),
+        multilooked_coherence=np.asarray(cpl_out.multilooked_coherence),
     )
 
 
@@ -436,7 +436,7 @@ def run_cpl(
         estimator=estimator,
         crlb_std_dev=crlb_std_dev_reshaped,
         closure_phases=closure_phases,
-        nearest_coherence=nearest_coherence,
+        multilooked_coherence=nearest_coherence,
     )
 
 

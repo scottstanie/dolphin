@@ -138,7 +138,7 @@ def run(
     ifg_file_list: list[Path] = []
     crlb_files: list[Path] = []
     closure_phase_files: list[Path] = []
-    nearest_coherence_files: list[Path] = []
+    multilooked_coherence_files: list[Path] = []
     temp_coh_file_list: list[Path] = []
     ps_file_list: list[Path] = []
     amp_dispersion_file_list: list[Path] = []
@@ -182,7 +182,7 @@ def run(
                 cur_ifg_list,
                 cur_crlb_files,
                 cur_closure_phase_files,
-                cur_nearest_coherence_files,
+                cur_multilooked_coherence_files,
                 comp_slcs,
                 temp_coh_files,
                 ps_file,
@@ -193,7 +193,7 @@ def run(
             ifg_file_list.extend(cur_ifg_list)
             crlb_files.extend(cur_crlb_files)
             closure_phase_files.extend(cur_closure_phase_files)
-            nearest_coherence_files.extend(cur_nearest_coherence_files)
+            multilooked_coherence_files.extend(cur_multilooked_coherence_files)
             comp_slc_dict[burst] = comp_slcs
             temp_coh_file_list.extend(temp_coh_files)
             ps_file_list.append(ps_file)
@@ -215,7 +215,7 @@ def run(
         ps_file_list=ps_file_list,
         crlb_file_list=crlb_files,
         closure_phase_file_list=closure_phase_files,
-        nearest_coherence_file_list=nearest_coherence_files,
+        multilooked_coherence_file_list=multilooked_coherence_files,
         amp_dispersion_list=amp_dispersion_file_list,
         shp_count_file_list=shp_count_file_list,
         similarity_file_list=similarity_file_list,

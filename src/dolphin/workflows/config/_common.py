@@ -180,7 +180,7 @@ class PhaseLinkingOptions(BaseModel, extra="forbid"):
         ),
     )
     flatten: bool = Field(
-        True,
+        False,
         description=(
             "Flatten (deramp) each SLC within the multilook window before covariance"
             " estimation. Removes local phase gradients to improve coherence estimates"

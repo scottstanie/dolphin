@@ -103,7 +103,7 @@ def run_wrapped_phase_sequential(
     output_slc_files: list[Path] = []
     crlb_files: list[Path] = []
     closure_phase_files: list[Path] = []
-    nearest_coherence_files: list[Path] = []
+    multilooked_coherence_files: list[Path] = []
     temp_coh_files: list[Path] = []
     similarity_files: list[Path] = []
     shp_count_files: list[Path] = []
@@ -162,7 +162,7 @@ def run_wrapped_phase_sequential(
             cur_output_files,
             cur_crlb_files,
             cur_closure_phase_files,
-            cur_nearest_coherence_files,
+            cur_multilooked_coherence_files,
             _cur_comp_slc_file,
             temp_coh_file,
             similarity_file,
@@ -170,7 +170,7 @@ def run_wrapped_phase_sequential(
         ) = _get_outputs_from_folder(cur_output_folder)
         crlb_files.extend(cur_crlb_files)
         closure_phase_files.extend(cur_closure_phase_files)
-        nearest_coherence_files.extend(cur_nearest_coherence_files)
+        multilooked_coherence_files.extend(cur_multilooked_coherence_files)
         output_slc_files.extend(cur_output_files)
         temp_coh_files.append(temp_coh_file)
         similarity_files.append(similarity_file)
@@ -234,7 +234,7 @@ def run_wrapped_phase_sequential(
         out_pl_slcs,
         crlb_files,
         closure_phase_files,
-        nearest_coherence_files,
+        multilooked_coherence_files,
         comp_slc_outputs,
         temp_coh_files,
         shp_count_files,
@@ -253,15 +253,15 @@ def _get_outputs_from_folder(
     shp_count_file = next(output_folder.glob("shp_counts_*"))
     crlb_files = sorted(output_folder.glob("crlb/crlb*tif"))
     closure_phase_files = sorted(output_folder.glob("closure_phases/closure_phase*tif"))
-    nearest_coherence_files = sorted(
-        output_folder.glob("nearest_coherence/nearest_coh*tif")
+    multilooked_coherence_files = sorted(
+        output_folder.glob("multilooked_coherence/multilooked_coherence*tif")
     )
 
     return (
         cur_output_files,
         crlb_files,
         closure_phase_files,
-        nearest_coherence_files,
+        multilooked_coherence_files,
         cur_comp_slc_file,
         temp_coh_file,
         similarity_file,

@@ -31,7 +31,7 @@ class WrappedPhaseOutput(NamedTuple):
         Paths to the output Cramer Rao Lower Bound (CRLB) files.
     closure_phase_files : list[Path]
         Paths to the output closure phase files.
-    nearest_coherence_files : list[Path]
+    multilooked_coherence_files : list[Path]
         Paths to the nearest-N coherence magnitude files. Empty if
         nearest_n_coherence=0 was used.
     comp_slc_file_list : list[Path]
@@ -61,7 +61,7 @@ class WrappedPhaseOutput(NamedTuple):
     ifg_file_list: list[Path]
     crlb_files: list[Path]
     closure_phase_files: list[Path]
-    nearest_coherence_files: list[Path]
+    multilooked_coherence_files: list[Path]
     comp_slc_file_list: list[Path]
     temp_coh_files: list[Path]
     ps_looked_file: Path
@@ -207,7 +207,7 @@ def run(
         similarity_files = sorted(pl_path.glob("*similarity*tif"))
         crlb_files = sorted(pl_path.rglob("crlb*tif"))
         closure_phase_files = sorted(pl_path.rglob("closure_phase*tif"))
-        nearest_coherence_files = sorted(pl_path.rglob("nearest_coh*tif"))
+        multilooked_coherence_files = sorted(pl_path.rglob("multilooked_coherence*tif"))
     else:
         logger.info(f"Running sequential EMI step in {pl_path}")
         kwargs = tqdm_kwargs | {"desc": f"Phase linking ({pl_path})"}
@@ -227,7 +227,7 @@ def run(
             phase_linked_slcs,
             crlb_files,
             closure_phase_files,
-            nearest_coherence_files,
+            multilooked_coherence_files,
             comp_slc_list,
             temp_coh_files,
             shp_count_files,
@@ -284,7 +284,7 @@ def run(
             existing_ifgs,
             crlb_files,
             closure_phase_files,
-            nearest_coherence_files,
+            multilooked_coherence_files,
             comp_slc_list,
             temp_coh_files,
             ps_looked_file,
@@ -332,7 +332,7 @@ def run(
         ifg_file_list,
         crlb_files,
         closure_phase_files,
-        nearest_coherence_files,
+        multilooked_coherence_files,
         comp_slc_list,
         temp_coh_files,
         ps_looked_file,

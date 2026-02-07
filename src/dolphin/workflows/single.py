@@ -149,16 +149,16 @@ def run_wrapped_phase_single(
             like_filename=like_filename,
         )
 
-    nearest_coherence_files: list[Path] = []
+    multilooked_coherence_files: list[Path] = []
     if nearest_n_coherence > 0:
-        nearest_coh_output_folder = output_folder / "nearest_coherence"
-        nearest_coh_output_folder.mkdir(exist_ok=True)
-        nearest_coherence_files = setup_output_folder(
+        multilooked_coh_output_folder = output_folder / "multilooked_coherence"
+        multilooked_coh_output_folder.mkdir(exist_ok=True)
+        multilooked_coherence_files = setup_output_folder(
             ministack=ministack,
-            name_generator=_make_name_nearest_coherence(nearest_n_coherence),
+            name_generator=_make_name_multilooked_coherence(nearest_n_coherence),
             strides=strides,
             dtype="float32",
-            output_folder=nearest_coh_output_folder,
+            output_folder=multilooked_coh_output_folder,
             like_filename=like_filename,
         )
 
@@ -348,8 +348,8 @@ def run_wrapped_phase_single(
 
             if nearest_n_coherence > 0:
                 # Save nearest coherence magnitudes
-                for i, coh_file in enumerate(nearest_coherence_files):
-                    coh_img = pl_output.nearest_coherence[
+                for i, coh_file in enumerate(multilooked_coherence_files):
+                    coh_img = pl_output.multilooked_coherence[
                         out_trim_rows, out_trim_cols, i
                     ]
                     writer.queue_write(
@@ -428,7 +428,7 @@ def run_wrapped_phase_single(
     if nearest_n_coherence > 0:
         logger.info("Repacking nearest coherence files for more compression")
         # Coherence is ~100 possible values (0.00 to 1.00), so 16 bits is plenty
-        io.repack_rasters(nearest_coherence_files, use_16_bits=True)
+        io.repack_rasters(multilooked_coherence_files, use_16_bits=True)
 
     written_comp_slc = output_files["compressed_slc"]
     ccslc_info = ministack.get_compressed_slc_info()
@@ -501,7 +501,7 @@ def _name_closure_phases(ministack: MiniStackInfo) -> list[str]:
     return [f"closure_phase_{triplet}.tif" for triplet in date_triplets]
 
 
-def _make_name_nearest_coherence(n: int) -> Callable[[MiniStackInfo], list[str]]:
+def _make_name_multilooked_coherence(n: int) -> Callable[[MiniStackInfo], list[str]]:
     """Create a function that generates nearest coherence filenames.
 
     Parameters
@@ -515,21 +515,23 @@ def _make_name_nearest_coherence(n: int) -> Callable[[MiniStackInfo], list[str]]
         Function that generates filenames for the nearest coherence outputs.
 
     """
-    from dolphin.phase_link._nearest_coherence import get_nearest_coherence_ifg_pairs
+    from dolphin.phase_link._multilooked_coherence import (
+        get_multilooked_coherence_ifg_pairs,
+    )
 
-    def _name_nearest_coherence(ministack: MiniStackInfo) -> list[str]:
+    def _name_multilooked_coherence(ministack: MiniStackInfo) -> list[str]:
         date_strs = ministack.get_date_str_list()
         # Get only the first date in case of compressed
         date_strs = [d.split("_")[0] for d in date_strs]
         num_slcs = len(date_strs)
-        pairs = get_nearest_coherence_ifg_pairs(num_slcs, n)
+        pairs = get_multilooked_coherence_ifg_pairs(num_slcs, n)
         filenames = []
         for ref_idx, sec_idx in pairs:
             date_pair = f"{date_strs[ref_idx]}_{date_strs[sec_idx]}"
-            filenames.append(f"nearest_coh_{date_pair}.tif")
+            filenames.append(f"multilooked_coherence_{date_pair}.tif")
         return filenames
 
-    return _name_nearest_coherence
+    return _name_multilooked_coherence
 
 
 def setup_output_folder(

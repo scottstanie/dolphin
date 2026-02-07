@@ -6,7 +6,7 @@ from jax import Array
 
 
 @jax.jit
-def extract_nearest_coherences(
+def extract_multilooked_coherences(
     cov_matrix: Array,
     n: int,
 ) -> Array:
@@ -81,7 +81,7 @@ def make_batch_extractor(n: int):
     return extract_batch
 
 
-def get_nearest_coherence_count(matrix_size: int, n: int) -> int:
+def get_multilooked_coherence_count(matrix_size: int, n: int) -> int:
     """Get the number of coherence values for a given matrix size and n.
 
     Parameters
@@ -100,7 +100,7 @@ def get_nearest_coherence_count(matrix_size: int, n: int) -> int:
     return sum(matrix_size - k for k in range(1, n + 1))
 
 
-def get_nearest_coherence_ifg_pairs(num_slcs: int, n: int) -> list[tuple[int, int]]:
+def get_multilooked_coherence_ifg_pairs(num_slcs: int, n: int) -> list[tuple[int, int]]:
     """Get the (reference_idx, secondary_idx) pairs for the nearest-N coherences.
 
     Useful for labeling outputs or understanding which interferogram each

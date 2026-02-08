@@ -10,7 +10,8 @@ from opera_utils import get_dates, make_nodata_mask
 
 from dolphin import Bbox, Filename, interferogram, masking, ps
 from dolphin._log import log_runtime, setup_logging
-from dolphin.io import VRTStack
+from dolphin.io import RemoteHDF5StackReader, VRTStack
+from dolphin.io._remote import is_remote_url
 from dolphin.utils import get_nearest_date_idx
 from dolphin.workflows import UnwrapMethod
 
@@ -105,14 +106,35 @@ def run(
     input_file_list = cfg.cslc_file_list
 
     # #############################################
-    # Make a VRT pointing to the input SLC files
+    # Make a VRT (or remote reader) for the input SLC stack
     # #############################################
     subdataset = cfg.input_options.subdataset
-    vrt_stack = VRTStack(
-        input_file_list,
-        subdataset=subdataset,
-        outfile=cfg.work_directory / "slc_stack.vrt",
-    )
+    use_remote = cfg.is_remote
+    if use_remote:
+        logger.info(
+            "Using remote HDF5 streaming reader for %d files", len(input_file_list)
+        )
+        ro = cfg.remote_options
+        slc_reader: VRTStack | RemoteHDF5StackReader = RemoteHDF5StackReader(
+            file_list=cfg.remote_file_urls,
+            subdataset=subdataset,
+            outfile=cfg.work_directory / "slc_stack_reference.tif",
+            reference_file=ro.reference_file,
+            sort_files=True,
+            file_date_fmt=cfg.input_options.cslc_date_fmt,
+            page_size=ro.page_size,
+            rdcc_nbytes=ro.rdcc_nbytes,
+            earthdata_username=ro.earthdata_username,
+            earthdata_password=ro.earthdata_password,
+            asf_endpoint=ro.asf_endpoint,
+            num_threads=ro.num_threads,
+        )
+    else:
+        slc_reader = VRTStack(
+            input_file_list,
+            subdataset=subdataset,
+            outfile=cfg.work_directory / "slc_stack.vrt",
+        )
 
     # Mark any files beginning with "compressed" as compressed
     is_compressed = ["compressed" in str(f).lower() for f in input_file_list]
@@ -131,9 +153,9 @@ def run(
         output_bounds=cfg.output_options.bounds,
         output_bounds_wkt=cfg.output_options.bounds_wkt,
         output_bounds_epsg=cfg.output_options.bounds_epsg,
-        like_filename=vrt_stack.outfile,
+        like_filename=slc_reader.outfile,
         layover_shadow_mask=layover_shadow_mask,
-        cslc_file_list=non_compressed_slcs,
+        cslc_file_list=non_compressed_slcs if not use_remote else [],
         subdataset=subdataset,
     )
 
@@ -155,8 +177,8 @@ def run(
 
         kwargs = tqdm_kwargs | {"desc": f"PS ({ps_output.parent})"}
         ps.create_ps(
-            reader=vrt_stack,
-            like_filename=vrt_stack.outfile,
+            reader=slc_reader,
+            like_filename=slc_reader.outfile,
             output_file=ps_output,
             output_amp_mean_file=cfg.ps_options._amp_mean_file,
             output_amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
@@ -227,7 +249,7 @@ def run(
             shp_count_files,
             similarity_files,
         ) = sequential.run_wrapped_phase_sequential(
-            slc_vrt_stack=vrt_stack,
+            slc_vrt_stack=slc_reader,
             output_folder=pl_path,
             ministack_size=cfg.phase_linking.ministack_size,
             output_reference_idx=cfg.phase_linking.output_reference_idx,

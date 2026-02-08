@@ -87,14 +87,20 @@ def run(
         utils.disable_gpu()
     utils.set_num_threads(cfg.worker_settings.threads_per_worker)
 
-    try:
-        grouped_slc_files = group_by_burst(cfg.cslc_file_list)
-    except ValueError as e:
-        # Make sure it's not some other ValueError
-        if "Could not parse burst id" not in str(e):
-            raise
-        # Otherwise, we have SLC files which are not OPERA burst files
+    if cfg.is_remote:
+        # Remote files (e.g. NISAR GSLC) are not burst-based OPERA products;
+        # skip burst grouping and process as a single stack.
+        logger.info("Remote mode: skipping burst grouping")
         grouped_slc_files = {"phase_linking": cfg.cslc_file_list}
+    else:
+        try:
+            grouped_slc_files = group_by_burst(cfg.cslc_file_list)
+        except ValueError as e:
+            # Make sure it's not some other ValueError
+            if "Could not parse burst id" not in str(e):
+                raise
+            # Otherwise, we have SLC files which are not OPERA burst files
+            grouped_slc_files = {"phase_linking": cfg.cslc_file_list}
 
     if cfg.amplitude_dispersion_files:
         grouped_amp_dispersion_files = group_by_burst(cfg.amplitude_dispersion_files)

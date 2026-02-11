@@ -18,7 +18,13 @@ from tqdm.auto import tqdm
 from dolphin import io, shp, similarity
 from dolphin._decorators import atomic_output
 from dolphin._types import Filename, HalfWindow, Strides
-from dolphin.io import BlockIndices, EagerLoader, StridedBlockManager, VRTStack
+from dolphin.io import (
+    BlockIndices,
+    EagerLoader,
+    RemoteHDF5StackReader,
+    StridedBlockManager,
+    VRTStack,
+)
 from dolphin.masking import load_mask_as_numpy
 from dolphin.phase_link import PhaseLinkRuntimeError, compress, run_phase_linking
 from dolphin.ps import calc_ps_block
@@ -44,7 +50,7 @@ class OutputFile:
 @atomic_output(output_arg="output_folder", is_dir=True)
 def run_wrapped_phase_single(
     *,
-    vrt_stack: VRTStack,
+    vrt_stack: VRTStack | RemoteHDF5StackReader,
     ministack: MiniStackInfo,
     output_folder: Filename,
     half_window: dict,

@@ -10,6 +10,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     field_validator,
     model_validator,
 )
@@ -17,12 +18,15 @@ from typing_extensions import Self
 
 from dolphin import constants
 
+from dolphin.io._remote import fix_url_scheme, is_remote_url
+
 from ._common import (
     InputOptions,
     InterferogramNetwork,
     OutputOptions,
     PhaseLinkingOptions,
     PsOptions,
+    RemoteOptions,
     TimeseriesOptions,
     WorkflowBase,
     _read_file_list_or_glob,
@@ -121,6 +125,27 @@ class DisplacementWorkflow(WorkflowBase):
     )
     unwrap_options: UnwrapOptions = Field(default_factory=UnwrapOptions)
     timeseries_options: TimeseriesOptions = Field(default_factory=TimeseriesOptions)
+    remote_options: RemoteOptions = Field(default_factory=RemoteOptions)
+
+    @property
+    def is_remote(self) -> bool:
+        """Whether the input files are remote URLs."""
+        if self.remote_options.enabled:
+            return True
+        if self.cslc_file_list:
+            return is_remote_url(str(self.cslc_file_list[0]))
+        return False
+
+    @property
+    def remote_file_urls(self) -> list[str]:
+        """Original remote URL strings (preserved from Path mangling)."""
+        if self._remote_file_urls:
+            return self._remote_file_urls
+        # Fallback: reconstruct from Path objects, fixing mangled schemes
+        return [fix_url_scheme(str(f)) for f in self.cslc_file_list]
+
+    # Private attribute to preserve original remote URLs (Path() mangles `//`)
+    _remote_file_urls: list[str] = PrivateAttr(default_factory=list)
 
     # internal helpers
     # Stores the list of directories to be created by the workflow
@@ -133,6 +158,18 @@ class DisplacementWorkflow(WorkflowBase):
     _check_cslc_file_glob = field_validator("cslc_file_list", mode="before")(
         _read_file_list_or_glob
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _save_remote_urls(cls, values):
+        """Capture original URL strings before Path coercion mangles '//'."""
+        file_list = values.get("cslc_file_list", [])
+        if isinstance(file_list, (list, tuple)):
+            raw = [str(f) for f in file_list]
+            if any(is_remote_url(s) for s in raw):
+                # Stash as a pseudo-private key; will be picked up in post_init
+                values["_raw_remote_urls"] = raw
+        return values
 
     @model_validator(mode="after")
     def _check_zero_interferogram_network(self: Self) -> Self:
@@ -160,6 +197,14 @@ class DisplacementWorkflow(WorkflowBase):
 
         input_options = self.input_options
         date_fmt = input_options.cslc_date_fmt
+
+        # Check whether the files are remote URLs
+        # Note: Path() mangles URLs by collapsing "//", so save original strings
+        _remote = any(is_remote_url(str(f)) for f in file_list)
+        if _remote:
+            # Auto-enable remote mode when URLs are detected
+            self.remote_options.enabled = True
+
         # Filter out files that don't have dates in the filename
         files_matching_date = [Path(f) for f in file_list if get_dates(f, fmt=date_fmt)]
         if len(files_matching_date) < len(file_list):
@@ -169,7 +214,7 @@ class DisplacementWorkflow(WorkflowBase):
             )
             raise ValueError(msg)
 
-        ext = file_list[0].suffix
+        ext = Path(str(file_list[0]).split("?")[0]).suffix  # strip query params
         # If they're HDF5/NetCDF files, we need to check that the subdataset exists
         if ext in [".h5", ".nc"]:
             subdataset = input_options.subdataset
@@ -178,15 +223,29 @@ class DisplacementWorkflow(WorkflowBase):
                 raise ValueError(msg)
 
         # Coerce the file_list to a sorted list of Path objects
-        self.cslc_file_list = [
-            Path(f) for f in sort_files_by_date(file_list, file_date_fmt=date_fmt)[0]
-        ]
+        sorted_files = sort_files_by_date(file_list, file_date_fmt=date_fmt)[0]
+        self.cslc_file_list = [Path(f) for f in sorted_files]
 
         return self
 
     def model_post_init(self, context: Any, /) -> None:
         """After validation, set up properties for use during workflow run."""
         super().model_post_init(context)
+
+        # Recover the original remote URLs (saved by _save_remote_urls before
+        # Path coercion mangled the '://' prefix) and sort them to match
+        # the sorted cslc_file_list order.
+        raw_urls = getattr(self, "_raw_remote_urls", None)
+        if raw_urls and self.is_remote:
+            sorted_urls = sort_files_by_date(
+                raw_urls, file_date_fmt=self.input_options.cslc_date_fmt
+            )[0]
+            self._remote_file_urls = [str(u) for u in sorted_urls]
+            # Clean up the extra field
+            try:
+                del self._raw_remote_urls
+            except (AttributeError, TypeError):
+                pass
 
         if self.input_options.wavelength is None and self.cslc_file_list:
             # Try to infer the wavelength from filenames
@@ -198,8 +257,8 @@ class DisplacementWorkflow(WorkflowBase):
                 pass
 
         # Ensure outputs from workflow steps are within work directory.
-        if not self.keep_paths_relative:
-            # Resolve all CSLC paths:
+        if not self.keep_paths_relative and not self.is_remote:
+            # Resolve all CSLC paths (skip for remote URLs):
             self.cslc_file_list = [p.resolve(strict=False) for p in self.cslc_file_list]
 
         work_dir = self.work_directory

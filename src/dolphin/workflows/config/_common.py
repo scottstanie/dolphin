@@ -32,6 +32,7 @@ __all__ = [
     "OutputOptions",
     "PhaseLinkingOptions",
     "PsOptions",
+    "RemoteOptions",
     "Strides",
     "TimeseriesOptions",
     "WorkerSettings",
@@ -289,6 +290,65 @@ class WorkerSettings(BaseModel, extra="forbid"):
     block_shape: tuple[int, int] = Field(
         (512, 512),
         description="Size (rows, columns) of blocks of data to load at a time.",
+    )
+
+
+class RemoteOptions(BaseModel, extra="forbid"):
+    """Options for streaming remote HDF5 files (e.g. NISAR GSLC from S3).
+
+    When ``enabled`` is *True*, the wrapped-phase workflow will open input
+    files via ``opera_utils.open_h5`` (fsspec + h5py) instead of building a
+    GDAL VRT.  This avoids downloading multi-GB files and reads data
+    block-by-block over the network.
+    """
+
+    enabled: bool = Field(
+        False,
+        description=(
+            "If True, use streaming remote HDF5 access instead of GDAL VRT."
+            " Automatically set to True when input files start with"
+            " http://, https://, or s3://."
+        ),
+    )
+    page_size: int = Field(
+        4 * 1024 * 1024,
+        description=(
+            "HDF5 page buffer size in bytes (must be a power of 2)."
+            " Larger values can improve sequential read performance."
+        ),
+    )
+    rdcc_nbytes: int = Field(
+        1024**3,
+        description=(
+            "h5py raw-data chunk cache size in bytes (default 1 GB)."
+            " Increase for large datasets to reduce re-reads."
+        ),
+    )
+    earthdata_username: Optional[str] = Field(
+        None,
+        description="Earthdata Login username (falls back to ~/.netrc).",
+    )
+    earthdata_password: Optional[str] = Field(
+        None,
+        description="Earthdata Login password (falls back to ~/.netrc).",
+    )
+    asf_endpoint: str = Field(
+        "OPERA",
+        description="ASF credential endpoint name for S3 temporary credentials.",
+    )
+    reference_file: Optional[Path] = Field(
+        None,
+        description=(
+            "Path to a local raster whose geotransform and projection will be"
+            " used as the spatial reference for output files. If not provided,"
+            " the reader attempts to extract geospatial metadata from the"
+            " first remote HDF5 file."
+        ),
+    )
+    num_threads: int = Field(
+        1,
+        description="Number of threads for parallel band-wise reads.",
+        ge=1,
     )
 
 

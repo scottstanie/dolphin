@@ -25,6 +25,7 @@ def main() -> int:
     tyro.extras.subcommand_cli_from_dict(
         {
             "run": run_cli,
+            "run-parallel": run_parallel_cli,
             "config": ConfigCli,
             "unwrap": run_unwrap,
             "timeseries": run_timeseries,
@@ -57,3 +58,28 @@ def run_cli(
 
     cfg = DisplacementWorkflow.from_yaml(config_file)
     displacement.run(cfg, debug=debug)
+
+
+def run_parallel_cli(
+    config_file: str,
+    /,
+    debug: bool = False,
+) -> None:
+    """Run the parallel (overlapping-segment) displacement workflow.
+
+    Splits the full SLC stack into overlapping temporal segments, processes
+    each independently, and merges the per-segment timeseries.
+
+    Parameters
+    ----------
+    config_file : str
+        YAML file containing the workflow options (with ``segment_options``).
+    debug : bool, optional
+        Enable debug logging, by default False.
+
+    """
+    from .workflows import parallel_displacement
+    from .workflows.config import ParallelDisplacementWorkflow
+
+    cfg = ParallelDisplacementWorkflow.from_yaml(config_file)
+    parallel_displacement.run(cfg, debug=debug)

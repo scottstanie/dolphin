@@ -3,6 +3,7 @@
 from ._common import *
 from ._displacement import *
 from ._enums import *
+from ._parallel_displacement import *
 from ._ps import *
 from ._unwrap_options import *
 from ._unwrapping import *

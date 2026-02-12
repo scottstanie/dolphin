@@ -6,11 +6,13 @@ Uses metric from [@Wang2022AccuratePersistentScatterer] for similarity.
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Callable, Literal, Sequence
 
 import numba
 import numpy as np
+from numba import cuda
 from numpy.typing import ArrayLike
 
 from dolphin._types import PathOrStr
@@ -26,6 +28,125 @@ def phase_similarity(x1: ArrayLike, x2: ArrayLike):
     for i in range(n):
         out += np.real(x1[i] * np.conj(x2[i]))
     return out / n
+
+
+@cuda.jit(device=True)
+def _phase_similarity_gpu(ifg_stack, n_ifg, r1, c1, r2, c2):
+    """Compute phase similarity between two pixels on the GPU.
+
+    Uses direct indexing into `ifg_stack` rather than slicing, since CUDA
+    device functions cannot create new array views.
+    """
+    out = 0.0
+    for i in range(n_ifg):
+        # real(x1 * conj(x2)) = real_1 * real_2 + imag_1 * imag_2
+        v1 = ifg_stack[i, r1, c1]
+        v2 = ifg_stack[i, r2, c2]
+        out += v1.real * v2.real + v1.imag * v2.imag
+    return out / n_ifg
+
+
+@cuda.jit(device=True)
+def _gpu_insertion_sort(arr, n):
+    """In-place insertion sort for a small local array on the GPU."""
+    for i in range(1, n):
+        key = arr[i]
+        j = i - 1
+        while j >= 0 and arr[j] > key:
+            arr[j + 1] = arr[j]
+            j -= 1
+        arr[j + 1] = key
+
+
+@cuda.jit(device=True)
+def _gpu_nanmedian(arr, n):
+    """Compute median of the first `n` elements, skipping NaN values."""
+    if n == 0:
+        return math.nan
+    # Insertion sort the valid values
+    _gpu_insertion_sort(arr, n)
+    if n % 2 == 1:
+        return arr[n // 2]
+    else:
+        return (arr[n // 2 - 1] + arr[n // 2]) / 2.0
+
+
+@cuda.jit(device=True)
+def _gpu_nanmax(arr, n):
+    """Compute max of the first `n` elements."""
+    if n == 0:
+        return math.nan
+    cur_max = arr[0]
+    for i in range(1, n):
+        if arr[i] > cur_max:
+            cur_max = arr[i]
+    return cur_max
+
+
+# Use a constant for the summary type: 0 = median, 1 = max
+_SUMMARY_MEDIAN = 0
+_SUMMARY_MAX = 1
+
+
+@cuda.jit
+def _similarity_gpu_kernel(
+    ifg_stack,
+    idxs,
+    mask,
+    out_similarity,
+    sim_buffer,
+    summary_type,
+):
+    """GPU kernel to compute phase similarity for each pixel.
+
+    Each CUDA thread processes one (row, col) pixel.
+
+    Parameters
+    ----------
+    ifg_stack : 3D complex array (n_ifg, rows, cols)
+        Unit interferograms.
+    idxs : 2D int array (num_compare_pixels, 2)
+        Relative row/col offsets for the circular neighborhood.
+    mask : 2D bool array (rows, cols)
+        True for valid pixels.
+    out_similarity : 2D float32 array (rows, cols)
+        Output similarity values (initialized to NaN).
+    sim_buffer : 3D float64 array (rows, cols, num_compare_pixels)
+        Pre-allocated workspace for per-pixel similarity vectors.
+    summary_type : int
+        0 for median, 1 for max.
+    """
+    r0, c0 = cuda.grid(2)
+    n_ifg, rows, cols = ifg_stack.shape
+    if r0 >= rows or c0 >= cols:
+        return
+    if not mask[r0, c0]:
+        return
+
+    num_compare_pixels = idxs.shape[0]
+    count = 0
+
+    for i_idx in range(num_compare_pixels):
+        ir = idxs[i_idx, 0]
+        ic = idxs[i_idx, 1]
+        # Clip to image bounds
+        r = max(min(r0 + ir, rows - 1), 0)
+        c = max(min(c0 + ic, cols - 1), 0)
+        if r == r0 and c == c0:
+            continue
+        if not mask[r, c]:
+            continue
+
+        sim_buffer[r0, c0, count] = _phase_similarity_gpu(
+            ifg_stack, n_ifg, r0, c0, r, c
+        )
+        count += 1
+
+    if count > 0:
+        if summary_type == _SUMMARY_MEDIAN:
+            out_similarity[r0, c0] = _gpu_nanmedian(sim_buffer[r0, c0], count)
+        else:
+            out_similarity[r0, c0] = _gpu_nanmax(sim_buffer[r0, c0], count)
 
 
 def median_similarity(
@@ -115,8 +236,52 @@ def _create_loop_and_run(
         raise ValueError(f"{ifg_stack.shape = }, but {mask.shape = }")
 
     idxs = get_circle_idxs(search_radius)
+
+    from dolphin.utils import gpu_is_available
+
+    if gpu_is_available():
+        return _run_gpu(unit_ifgs, idxs, mask, out_similarity, func)
     loop_func = _make_loop_function(func)
     return loop_func(unit_ifgs, idxs, mask, out_similarity)
+
+
+def _run_gpu(
+    unit_ifgs: np.ndarray,
+    idxs: np.ndarray,
+    mask: np.ndarray,
+    out_similarity: np.ndarray,
+    func: Callable[[ArrayLike], np.ndarray],
+) -> np.ndarray:
+    """Run the similarity computation on the GPU."""
+    _n_ifg, rows, cols = unit_ifgs.shape
+    num_compare_pixels = len(idxs)
+
+    # Determine summary type from the function
+    if func is np.nanmedian:
+        summary_type = _SUMMARY_MEDIAN
+    elif func is np.nanmax:
+        summary_type = _SUMMARY_MAX
+    else:
+        raise ValueError(f"Unsupported GPU summary function: {func}")
+
+    # Ensure complex128 for the GPU kernel (numba cuda supports complex128)
+    unit_ifgs_gpu = cuda.to_device(np.ascontiguousarray(unit_ifgs.astype(np.complex128)))
+    idxs_gpu = cuda.to_device(np.ascontiguousarray(idxs.astype(np.int32)))
+    mask_gpu = cuda.to_device(np.ascontiguousarray(mask))
+    out_gpu = cuda.to_device(out_similarity)
+    sim_buffer = cuda.to_device(
+        np.zeros((rows, cols, num_compare_pixels), dtype=np.float64)
+    )
+
+    threads_per_block = (16, 16)
+    blocks_per_grid = (
+        math.ceil(rows / threads_per_block[0]),
+        math.ceil(cols / threads_per_block[1]),
+    )
+    _similarity_gpu_kernel[blocks_per_grid, threads_per_block](
+        unit_ifgs_gpu, idxs_gpu, mask_gpu, out_gpu, sim_buffer, summary_type
+    )
+    return out_gpu.copy_to_host()
 
 
 def _make_loop_function(

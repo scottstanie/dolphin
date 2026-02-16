@@ -38,6 +38,7 @@ class OutputPaths:
     stitched_closure_phase_files: list[Path]
     stitched_ps_file: Path
     stitched_amp_dispersion_file: Path
+    stitched_multilooked_coherence_files: list[Path] | None
     unwrapped_paths: list[Path] | None
     conncomp_paths: list[Path] | None
     timeseries_paths: list[Path] | None
@@ -242,6 +243,7 @@ def run(
             stitched_similarity_files=stitched_paths.similarity_files,
             stitched_crlb_files=stitched_paths.crlb_paths,
             stitched_closure_phase_files=stitched_paths.closure_phase_files,
+            stitched_multilooked_coherence_files=stitched_paths.multilooked_coherence_files,
             unwrapped_paths=None,
             conncomp_paths=None,
             timeseries_paths=None,
@@ -318,6 +320,7 @@ def run(
         stitched_amp_dispersion_file=stitched_paths.amp_dispersion_file,
         stitched_shp_count_files=stitched_paths.shp_count_files,
         stitched_similarity_files=stitched_paths.similarity_files,
+        stitched_multilooked_coherence_files=stitched_paths.multilooked_coherence_files,
         unwrapped_paths=unwrapped_paths,
         # TODO: Let's keep the unwrapped_paths since all the outputs are
         # corresponding to those and if we have a network unwrapping, the

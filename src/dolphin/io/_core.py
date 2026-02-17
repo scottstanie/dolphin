@@ -32,6 +32,7 @@ __all__ = [
     "DEFAULT_ENVI_OPTIONS",
     "DEFAULT_HDF5_OPTIONS",
     "DEFAULT_TIFF_OPTIONS",
+    "DEFAULT_TIFF_OPTIONS",
     "DEFAULT_TILE_SHAPE",
     "EXTRA_COMPRESSED_TIFF_OPTIONS",
     "copy_projection",
@@ -59,10 +60,12 @@ __all__ = [
 
 
 DEFAULT_DATETIME_FORMAT = "%Y%m%d"
-DEFAULT_TILE_SHAPE = [128, 128]
+DEFAULT_TILE_SHAPE = [256, 256]
 # For use in rasterio
 DEFAULT_TIFF_OPTIONS_RIO = {
     "compress": "lzw",
+    # Floating-point predictor for better LZW compression of float32 data
+    "predictor": 2,
     "zlevel": 4,
     "bigtiff": "yes",
     "tiled": "yes",
@@ -70,12 +73,7 @@ DEFAULT_TIFF_OPTIONS_RIO = {
     "blockxsize": DEFAULT_TILE_SHAPE[1],
     "blockysize": DEFAULT_TILE_SHAPE[0],
 }
-EXTRA_COMPRESSED_TIFF_OPTIONS_RIO = DEFAULT_TIFF_OPTIONS_RIO | {
-    "blockxsize": 512,
-    "blockysize": 512,
-    "nbits": 16,
-    "predictor": 2,
-}
+EXTRA_COMPRESSED_TIFF_OPTIONS_RIO = DEFAULT_TIFF_OPTIONS_RIO | {"nbits": 16}
 # For gdal's bindings
 DEFAULT_TIFF_OPTIONS = tuple(
     f"{k.upper()}={v}" for k, v in DEFAULT_TIFF_OPTIONS_RIO.items()

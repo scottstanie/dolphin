@@ -312,12 +312,14 @@ def _redo_reference(
         new_stem = format_dates(ref_date, secondary_dates[idx])
         cur_output_name = extra_out_dir / f"{new_stem}.tif"
         cur = io.load_gdal(cur_img, masked=True)
-        new_out = cur - ref
+        new_out = (cur - ref).astype(np.float32)
         io.write_arr(
             arr=new_out,
             like_filename=extra_ref_img,
             output_name=cur_output_name,
             units=units,
+            dtype=np.float32,
+            options=list(io.DEFAULT_TIFF_OPTIONS),
         )
 
         # rename the reference date in the residual timeseries
@@ -381,13 +383,15 @@ def _convert_and_reference(
         else:
             arr_radians -= ref_value
         # Make sure we keep the same mask as the original
-        out_arr = (arr_radians * constant).filled(nodataval)
+        out_arr = (arr_radians * constant).filled(nodataval).astype(np.float32)
         io.write_arr(
             arr=out_arr,
             output_name=target,
             units=units,
             like_filename=p,
             nodata=nodataval,
+            dtype=np.float32,
+            options=list(io.DEFAULT_TIFF_OPTIONS),
         )
 
     return out_paths
@@ -853,7 +857,11 @@ def create_velocity(
         unw_stack = unw_stack - ref_data
         # Fit a line to each pixel with weighted least squares
         velo = estimate_velocity(x_arr=x_arr, unw_stack=unw_stack, weight_stack=weights)
-        return (np.where(bad_pixel_mask[rows, cols], 0, velo), rows, cols)
+        return (
+            np.where(bad_pixel_mask[rows, cols], 0, velo).astype(np.float32),
+            rows,
+            cols,
+        )
 
     # Note: For some reason, the `RasterStackReader` is much slower than the VRT
     # for files on S3:
@@ -863,7 +871,12 @@ def create_velocity(
     readers = [unw_reader]
     if cor_reader is not None:
         readers.append(cor_reader)
-    writer = io.BackgroundRasterWriter(output_file, like_filename=unw_file_list[0])
+    writer = io.BackgroundRasterWriter(
+        output_file,
+        like_filename=unw_file_list[0],
+        dtype=np.float32,
+        predictor=3,
+    )
     io.process_blocks(
         readers=readers,
         writer=writer,
@@ -1161,7 +1174,9 @@ def invert_unw_network(
         residual_sum = np.where(masked_pixels, np.nan, np.asarray(residual_sum))
 
         return (
-            np.vstack([out_displacement, residuals_per_date, residual_sum[np.newaxis]]),
+            np.vstack(
+                [out_displacement, residuals_per_date, residual_sum[np.newaxis]]
+            ).astype(np.float32),
             rows,
             cols,
         )
@@ -1172,6 +1187,8 @@ def invert_unw_network(
         like_filename=unw_file_list[0],
         # Using np.nan for the residuals, since it's not a valid phase
         nodata=np.nan,
+        dtype=np.float32,
+        options=list(io.DEFAULT_TIFF_OPTIONS),
     )
 
     io.process_blocks(

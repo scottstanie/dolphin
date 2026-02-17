@@ -1,27 +1,32 @@
 """Signal-to-Clutter Ratio (SCR) estimation for PS selection.
 
 Implements the SCR-based PS selection method described in:
+- Shanker & Zebker (2007), "Persistent scatterer selection using maximum
+  likelihood estimation", GRL, doi:10.1029/2007GL030806.
 - Agram & Simons (2015), "Efficient Persistent Scatterer Identification using
   Signal-to-Clutter Ratio", IEEE GRSL.
-- Agram (2010), "Persistent Scatterer Interferometry in Natural Terrain", PhD thesis.
 
-The SCR is estimated from the phase residues of interferograms formed from an
-SLC stack. The phase residue is computed by subtracting the local average phase
-(via a boxcar filter) from the original interferometric phase. The SCR is then
-estimated via maximum likelihood over a grid of candidate SCR values.
+Single-master interferograms are formed from the SLC stack (using a configurable
+reference SLC, default middle of stack). Each interferogram is spatially filtered
+(boxcar) to estimate and remove the correlated phase (atmosphere, deformation,
+orbit, DEM errors). The residual phase at each pixel follows a distribution
+parameterized by the SCR, which is estimated via maximum likelihood over a grid
+of candidate values.
 """
 
 from __future__ import annotations
 
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Literal, Optional
 
+import jax.numpy as jnp
 import numpy as np
+from jax import jit, lax, vmap
+from jax.scipy.special import erfc as _jax_erfc
 from numpy.typing import ArrayLike
 from osgeo import gdal
-from scipy.ndimage import uniform_filter
-from scipy.special import erfc
 
 from dolphin import io
 from dolphin._types import Filename
@@ -37,6 +42,171 @@ SCR_NODATA = 0.0
 SCR_DTYPE = np.float32
 _SCR_REPACK_OPTIONS = {"keep_bits": 10, "predictor": 3}
 
+# Number of candidate SCR values tested in the MLE grid search
+_N_SCR_CANDIDATES = 50
+# Number of phase bins for the constant-model lookup table
+_N_PHASE_BINS = 100
+
+
+# ---------------------------------------------------------------------------
+# JAX helper functions (not individually JIT'd; composed into _calc_scr_jax)
+# ---------------------------------------------------------------------------
+
+
+def _boxcar_filter_2d(arr, window_size):
+    """2D uniform (boxcar) filter via ``lax.reduce_window``."""
+    half = window_size // 2
+    padding = [(half, half), (half, half)]
+    dims = (window_size, window_size)
+    strides = (1, 1)
+    out = lax.reduce_window(arr, jnp.float32(0), lax.add, dims, strides, padding)
+    return out / (window_size * window_size)
+
+
+def _compute_phase_residues(slc_block, reference_idx, window_size):
+    """Compute phase residues from single-master interferograms.
+
+    Forms interferograms between each SLC and the reference SLC, spatially
+    filters each interferogram with a boxcar, then extracts phase residues.
+    """
+    master = slc_block[reference_idx]
+    ifgs = slc_block * jnp.conj(master)[None]
+
+    def _residue_one(ifg):
+        filtered_real = _boxcar_filter_2d(ifg.real, window_size)
+        filtered_imag = _boxcar_filter_2d(ifg.imag, window_size)
+        ifg_filtered = filtered_real + 1j * filtered_imag
+        amp_filtered = jnp.abs(ifg_filtered)
+        residue = ifg * jnp.conj(ifg_filtered) / (1e-5 + amp_filtered)
+        return jnp.angle(residue)
+
+    all_residues = vmap(_residue_one)(ifgs)
+    # Remove the self-interferogram at reference_idx
+    return jnp.concatenate(
+        [all_residues[:reference_idx], all_residues[reference_idx + 1 :]], axis=0
+    )
+
+
+def _phase_pdf_gaussian(gamma, phi):
+    r"""PDF of interferometric phase (Gaussian model).
+
+    Shanker & Zebker (2007), Eq. 1.
+
+    .. math::
+
+        f(\phi | \gamma) = \frac{1-\rho^2}{2\pi(1-\beta^2)}
+        \left(1 + \frac{\beta \arccos(-\beta)}{\sqrt{1-\beta^2}}\right)
+
+    where :math:`\rho = \gamma / (1+\gamma)` and :math:`\beta = \rho \cos\phi`.
+    """
+    rho = gamma / (1 + gamma)
+    beta = rho * jnp.cos(phi)
+    return (
+        (1 - rho**2)
+        / (2 * jnp.pi * (1 - beta**2))
+        * (1 + beta * jnp.arccos(-beta) / jnp.sqrt(1 - beta**2))
+    )
+
+
+def _phase_pdf_single_look(gamma, theta):
+    r"""PDF of SAR phase for a constant signal with Gaussian noise.
+
+    Agram & Simons (2015).
+    """
+    cos_t = jnp.cos(theta)
+    sin_t = jnp.sin(theta)
+    sqrt_g = jnp.sqrt(gamma)
+    return (
+        1.0
+        / (2 * jnp.pi)
+        * jnp.exp(-gamma * sin_t**2)
+        * (
+            jnp.exp(-gamma * cos_t**2)
+            + jnp.sqrt(jnp.pi * gamma) * cos_t * _jax_erfc(-sqrt_g * cos_t)
+        )
+    )
+
+
+def _int_phase_pdf_constant(gamma, phi, n_integration):
+    """Numerically integrate joint phase PDF for the constant-signal model."""
+    i_vals = jnp.arange(n_integration)
+    phi_sums = 2 * i_vals * jnp.pi / n_integration - jnp.pi
+    # (n_integration, n_bins)
+    theta1 = (phi[None, :] + phi_sums[:, None]) / 2
+    theta2 = (phi_sums[:, None] - phi[None, :]) / 2
+
+    p1 = _phase_pdf_single_look(gamma, theta1)
+    p2 = _phase_pdf_single_look(gamma, theta2)
+    p1s = _phase_pdf_single_look(gamma, theta1 + jnp.pi)
+    p2s = _phase_pdf_single_look(gamma, theta2 + jnp.pi)
+    joint = 0.5 * (p1 * p2 + p1s * p2s)
+    return jnp.sum(joint, axis=0) * (2 * jnp.pi / n_integration)
+
+
+def _estimate_scr(phase_residues, model):
+    """Estimate SCR per pixel from phase residues.
+
+    For ``model="coherence"``, uses the method-of-moments estimator
+    (temporal coherence magnitude mapped to SCR). For ``"gaussian"``
+    or ``"constant"``, performs a maximum-likelihood grid search over
+    candidate SCR values.
+    """
+    nrow, ncol = phase_residues.shape[1], phase_residues.shape[2]
+    phi = phase_residues.reshape(phase_residues.shape[0], -1)
+
+    if model == "coherence":
+        # Method-of-moments: temporal coherence → SCR
+        phasors = jnp.exp(1j * phi)
+        coherence = jnp.abs(jnp.mean(phasors, axis=0))
+        scr = coherence / jnp.maximum(1 - coherence, 1e-6)
+        return scr.reshape(nrow, ncol)
+
+    # MLE grid search
+    rho = jnp.linspace(0.0, 0.99, _N_SCR_CANDIDATES)
+    scr_candidates = rho / (1 - rho)
+
+    if model == "gaussian":
+
+        def _ll_gaussian(scr_val):
+            p = _phase_pdf_gaussian(scr_val, phi)
+            return jnp.sum(jnp.log(jnp.maximum(p, 1e-30)), axis=0)
+
+        all_ll = vmap(_ll_gaussian)(scr_candidates)
+    else:
+        # Build lookup tables for the constant-signal model
+        phi_test = jnp.linspace(-jnp.pi, jnp.pi, _N_PHASE_BINS + 1)
+        lookup = vmap(lambda g: _int_phase_pdf_constant(g, phi_test, _N_PHASE_BINS))(
+            scr_candidates
+        )
+        idx = jnp.round((phi + jnp.pi) / (2 * jnp.pi / _N_PHASE_BINS)).astype(jnp.int32)
+        idx = jnp.clip(idx, 0, _N_PHASE_BINS)
+
+        def _ll_constant(lut):
+            p = lut[idx]
+            return jnp.sum(jnp.log(jnp.maximum(p, 1e-30)), axis=0)
+
+        all_ll = vmap(_ll_constant)(lookup)
+
+    best_idx = jnp.argmax(all_ll, axis=0)
+    return scr_candidates[best_idx].reshape(nrow, ncol)
+
+
+# ---------------------------------------------------------------------------
+# JIT-compiled entry point (one per model due to static_argnames)
+# ---------------------------------------------------------------------------
+
+
+@partial(jit, static_argnames=["reference_idx", "window_size", "model"])
+def _calc_scr_jax(slc_block, reference_idx, window_size, model):
+    """JIT-compiled SCR computation for a single spatial block."""
+    phase_residues = _compute_phase_residues(slc_block, reference_idx, window_size)
+    return _estimate_scr(phase_residues, model)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 
 def create_scr(
     *,
@@ -44,7 +214,8 @@ def create_scr(
     output_file: Filename,
     like_filename: Filename,
     window_size: int = 11,
-    model: Literal["constant", "gaussian"] = "constant",
+    model: Literal["constant", "gaussian", "coherence"] = "gaussian",
+    reference_idx: int | None = None,
     nodata_mask: Optional[np.ndarray] = None,
     block_shape: tuple[int, int] = (512, 512),
     **tqdm_kwargs,
@@ -62,7 +233,10 @@ def create_scr(
     window_size : int, optional
         Box-car filter window size for computing phase residues. Default is 11.
     model : {"constant", "gaussian"}, optional
-        Phase distribution model for SCR estimation. Default is "constant".
+        Phase distribution model for SCR estimation. Default is "gaussian".
+    reference_idx : int or None, optional
+        Index of the reference SLC for single-master interferogram formation.
+        If None, uses N // 2 (middle of stack). Default is None.
     nodata_mask : Optional[np.ndarray]
         If provided, skips computing SCR over areas where the mask is False.
     block_shape : tuple[int, int], optional
@@ -86,13 +260,13 @@ def create_scr(
         cur_rows, cur_cols = cur_data.shape[-2:]
 
         if cur_data.shape[0] < 2:
-            # Need at least 2 SLCs to form an interferogram
             scr_block = np.full((cur_rows, cur_cols), SCR_NODATA, dtype=SCR_DTYPE)
         elif not (np.all(cur_data == 0) or np.all(np.isnan(cur_data))):
             scr_block = calc_scr_block(
                 cur_data,
                 window_size=window_size,
                 model=model,
+                reference_idx=reference_idx,
             )
         else:
             scr_block = np.full((cur_rows, cur_cols), SCR_NODATA, dtype=SCR_DTYPE)
@@ -101,7 +275,6 @@ def create_scr(
 
     logger.info(f"Waiting to write {writer.num_queued} blocks of SCR data.")
     writer.notify_finished()
-    # Repack for better compression
     repack_raster(Path(output_file), output_dir=None, **_SCR_REPACK_OPTIONS)
     logger.info("Finished writing SCR file")
 
@@ -109,13 +282,13 @@ def create_scr(
 def calc_scr_block(
     slc_block: ArrayLike,
     window_size: int = 11,
-    model: Literal["constant", "gaussian"] = "constant",
+    model: Literal["constant", "gaussian", "coherence"] = "gaussian",
+    reference_idx: int | None = None,
 ) -> np.ndarray:
     """Calculate signal-to-clutter ratio for a block of SLC data.
 
-    Forms consecutive interferograms from the SLC stack, computes phase
-    residues by subtracting a boxcar-filtered local average, then estimates
-    SCR per pixel via maximum likelihood.
+    Forms single-master interferograms, computes phase residues by subtracting
+    a boxcar-filtered local average, then estimates SCR per pixel via MLE.
 
     Parameters
     ----------
@@ -124,320 +297,30 @@ def calc_scr_block(
     window_size : int, optional
         Box-car filter window size for local phase estimation. Default is 11.
     model : {"constant", "gaussian"}, optional
-        Phase distribution model for SCR estimation. Default is "constant".
+        Phase distribution model for SCR estimation. Default is "gaussian"
+        (Shanker & Zebker, 2007, Eq. 1).
+    reference_idx : int or None, optional
+        Index of the reference SLC. If None, uses N // 2. Default is None.
 
     Returns
     -------
     scr : np.ndarray
         Signal-to-clutter ratio per pixel, shape (rows, cols), dtype float32.
 
-    Notes
-    -----
-    Edge pixels (within `window_size // 2` of the block boundary) may have
-    slightly less accurate SCR estimates due to the boxcar filter edge handling.
-
     """
     slc_block = np.asarray(slc_block)
-    if slc_block.ndim != 3:
-        msg = f"Expected 3D SLC block (n_slc, rows, cols), got shape {slc_block.shape}"
-        raise ValueError(msg)
-
-    n_slc, _nrow, _ncol = slc_block.shape
-    if n_slc < 2:
-        msg = "Need at least 2 SLCs to compute SCR"
-        raise ValueError(msg)
-
-    # Compute phase residues from consecutive interferograms
-    phase_residues = _compute_phase_residues(slc_block, window_size)
-
-    # Remove mean phase bias across interferograms
-    cmean = np.mean(np.exp(1j * phase_residues), axis=0)
-    phase_residues = np.angle(np.exp(1j * phase_residues) * np.conj(cmean)[np.newaxis])
-
-    # Estimate SCR per pixel via MLE
-    scr = _estimate_scr_mle(phase_residues, model=model)
-    return scr.astype(np.float32)
-
-
-def _compute_phase_residues(
-    slc_block: np.ndarray,
-    window_size: int,
-) -> np.ndarray:
-    """Compute interferometric phase residues from an SLC stack.
-
-    Forms consecutive interferograms and subtracts the local average phase
-    (estimated via boxcar filtering) to obtain phase residues.
-
-    Parameters
-    ----------
-    slc_block : np.ndarray
-        Complex SLC data, shape (n_slc, rows, cols).
-    window_size : int
-        Box-car filter window size.
-
-    Returns
-    -------
-    phase_residues : np.ndarray
-        Phase residues, shape (n_ifg, rows, cols), dtype float32.
-
-    """
-    n_slc, nrow, ncol = slc_block.shape
-    n_ifg = n_slc - 1
-
-    phase_residues = np.empty((n_ifg, nrow, ncol), dtype=np.float32)
-    for i in range(n_ifg):
-        ifg = slc_block[i + 1] * np.conj(slc_block[i])
-
-        # Boxcar filter on real and imaginary parts separately
-        filtered_real = uniform_filter(ifg.real.astype(np.float64), size=window_size)
-        filtered_imag = uniform_filter(ifg.imag.astype(np.float64), size=window_size)
-        ifg_filtered = filtered_real + 1j * filtered_imag
-
-        # Phase residue: subtract filtered phase from original
-        amp_filtered = np.abs(ifg_filtered)
-        residue = ifg * np.conj(ifg_filtered) / (1e-5 + amp_filtered)
-        phase_residues[i] = np.angle(residue)
-
-    return phase_residues
-
-
-def _estimate_scr_mle(
-    phase_residues: np.ndarray,
-    model: Literal["constant", "gaussian"] = "constant",
-) -> np.ndarray:
-    """Estimate SCR per pixel via maximum likelihood estimation.
-
-    Tests a grid of candidate SCR values and selects the one that maximizes
-    the log-likelihood of the observed phase residues.
-
-    Parameters
-    ----------
-    phase_residues : np.ndarray
-        Phase residues, shape (n_ifg, rows, cols) or (n_ifg, n_pixels).
-    model : {"constant", "gaussian"}, optional
-        Phase distribution model. Default is "constant".
-
-    Returns
-    -------
-    scr : np.ndarray
-        Estimated SCR values.
-
-    """
-    # Define candidate SCR grid
-    rho = np.linspace(0.0, 0.99, 50)
-    scr_candidates = rho / (1 - rho)
-
-    if phase_residues.ndim == 3:
-        n_ifg, nrow, ncol = phase_residues.shape
-        phi = phase_residues.reshape(n_ifg, -1)
-    else:
-        phi = phase_residues
-
-    n_pixels = phi.shape[1]
-
-    # Pre-compute the PDF lookup table for the constant model
-    if model == "constant":
-        pdf_lookup = _build_constant_pdf_lookup(scr_candidates)
-
-    log_likelihood = np.full((len(scr_candidates), n_pixels), -np.inf, dtype=np.float64)
-    for i, scr_val in enumerate(scr_candidates):
-        if model == "gaussian":
-            p = _phase_pdf_gaussian(scr_val, phi)
-        elif model == "constant":
-            p = _phase_pdf_constant_lookup(phi, pdf_lookup[i])
-        else:
-            msg = f"Unknown model: {model!r}. Use 'constant' or 'gaussian'."
-            raise ValueError(msg)
-
-        # Sum log-likelihood across interferograms
-        log_likelihood[i] = np.sum(np.log(np.maximum(p, 1e-30)), axis=0)
-
-    best_idx = np.argmax(log_likelihood, axis=0)
-    scr = scr_candidates[best_idx]
-
-    if phase_residues.ndim == 3:
-        scr = scr.reshape(nrow, ncol)
-    return scr
-
-
-def _phase_pdf_gaussian(gamma: float, phi: np.ndarray) -> np.ndarray:
-    r"""PDF of interferometric phase assuming Gaussian signal and noise.
-
-    Parameters
-    ----------
-    gamma : float
-        Signal-to-clutter ratio.
-    phi : np.ndarray
-        Interferometric phase values.
-
-    Returns
-    -------
-    np.ndarray
-        Probability density at each phase value.
-
-    Notes
-    -----
-    The PDF is:
-
-    .. math::
-
-        f(\phi | \gamma) = \frac{1-\rho^2}{2\pi(1-\beta^2)}
-        \left(1 + \frac{\beta \arccos(-\beta)}{\sqrt{1-\beta^2}}\right)
-
-    where :math:`\rho = \gamma / (1+\gamma)` and :math:`\beta = \rho \cos(\phi)`.
-
-    """
-    rho = gamma / (1 + gamma)
-    beta = rho * np.cos(phi)
-    f = (
-        (1 - rho**2)
-        / (2 * np.pi * (1 - beta**2))
-        * (1 + beta * np.arccos(-beta) / np.sqrt(1 - beta**2))
-    )
-    return f
-
-
-def _phase_pdf_single_look(gamma: float, theta: np.ndarray) -> np.ndarray:
-    r"""PDF of SAR phase for a constant signal with Gaussian noise.
-
-    Parameters
-    ----------
-    gamma : float
-        Signal-to-clutter ratio.
-    theta : np.ndarray
-        SAR phase values.
-
-    Returns
-    -------
-    np.ndarray
-        Probability density at each phase value.
-
-    Notes
-    -----
-    The PDF is from Agram (2015):
-
-    .. math::
-
-        p(\theta | \gamma) = \frac{1}{2\pi} e^{-\gamma \sin^2\theta}
-        \left( e^{-\gamma \cos^2\theta}
-        + \sqrt{\pi \gamma} \cos\theta \, \mathrm{erfc}(-\sqrt{\gamma}\cos\theta)
-        \right)
-
-    """
-    cos_theta = np.cos(theta)
-    sin_theta = np.sin(theta)
-    sqrt_gamma = np.sqrt(gamma)
-
-    p = (
-        1.0
-        / (2 * np.pi)
-        * np.exp(-gamma * sin_theta**2)
-        * (
-            np.exp(-gamma * cos_theta**2)
-            + np.sqrt(np.pi * gamma) * cos_theta * erfc(-sqrt_gamma * cos_theta)
-        )
-    )
-    return p
-
-
-def _build_constant_pdf_lookup(
-    scr_candidates: np.ndarray,
-    n_phase_bins: int = 100,
-) -> list[np.ndarray]:
-    """Pre-compute PDF lookup tables for the constant signal model.
-
-    For each candidate SCR, numerically integrates the joint phase distribution
-    and stores a lookup table indexed by phase.
-
-    Parameters
-    ----------
-    scr_candidates : np.ndarray
-        Array of candidate SCR values.
-    n_phase_bins : int, optional
-        Number of phase bins for the lookup table. Default is 100.
-
-    Returns
-    -------
-    list[np.ndarray]
-        List of lookup tables, one per candidate SCR.
-
-    """
-    lookup_tables = []
-    phi_test = np.linspace(-np.pi, np.pi, n_phase_bins + 1)
-
-    for scr_val in scr_candidates:
-        # Numerically integrate the joint phase distribution
-        lut = _int_phase_pdf_constant(scr_val, phi_test, n_phase_bins)
-        lookup_tables.append(lut)
-
-    return lookup_tables
-
-
-def _int_phase_pdf_constant(
-    gamma: float,
-    phi: np.ndarray,
-    n_integration: int = 100,
-) -> np.ndarray:
-    """Compute interferometric phase PDF for constant signal model.
-
-    Numerically integrates the joint phase distribution over the sum phase.
-
-    Parameters
-    ----------
-    gamma : float
-        Signal-to-clutter ratio.
-    phi : np.ndarray
-        Phase values at which to evaluate the PDF.
-    n_integration : int
-        Number of integration points.
-
-    Returns
-    -------
-    np.ndarray
-        PDF values at each phase value.
-
-    """
-    f = np.zeros_like(phi, dtype=np.float64)
-    for i in range(n_integration):
-        phi_sum = 2 * i * np.pi / n_integration - np.pi
-        # Joint phase distribution for constant signal
-        theta1 = (phi + phi_sum) / 2
-        theta2 = (phi_sum - phi) / 2
-
-        p1 = _phase_pdf_single_look(gamma, theta1)
-        p2 = _phase_pdf_single_look(gamma, theta2)
-        p1_shifted = _phase_pdf_single_look(gamma, theta1 + np.pi)
-        p2_shifted = _phase_pdf_single_look(gamma, theta2 + np.pi)
-
-        joint = 0.5 * (p1 * p2 + p1_shifted * p2_shifted)
-        f += (2 * np.pi / n_integration) * joint
-
-    return f
-
-
-def _phase_pdf_constant_lookup(
-    phi: np.ndarray,
-    lookup_table: np.ndarray,
-) -> np.ndarray:
-    """Evaluate PDF using a pre-computed lookup table.
-
-    Parameters
-    ----------
-    phi : np.ndarray
-        Phase values at which to evaluate the PDF.
-    lookup_table : np.ndarray
-        Pre-computed PDF lookup table.
-
-    Returns
-    -------
-    np.ndarray
-        PDF values at each phase value.
-
-    """
-    n_bins = len(lookup_table) - 1
-    idx = np.round((phi + np.pi) / (2 * np.pi / n_bins)).astype(int)
-    idx = np.clip(idx, 0, n_bins)
-    return lookup_table[idx]
+    assert (
+        slc_block.ndim == 3
+    ), f"Expected 3D SLC block (n_slc, rows, cols), got shape {slc_block.shape}"
+    n_slc = slc_block.shape[0]
+    assert n_slc >= 2, "Need at least 2 SLCs to compute SCR"
+
+    if reference_idx is None:
+        reference_idx = n_slc // 2
+
+    slc_jax = jnp.asarray(slc_block, dtype=jnp.complex64)
+    scr = _calc_scr_jax(slc_jax, reference_idx, window_size, model)
+    return np.asarray(scr, dtype=np.float32)
 
 
 def create_ps_scr(
@@ -450,7 +333,8 @@ def create_ps_scr(
     like_filename: Filename,
     scr_threshold: float = 2.0,
     window_size: int = 11,
-    model: Literal["constant", "gaussian"] = "constant",
+    model: Literal["constant", "gaussian", "coherence"] = "gaussian",
+    reference_idx: int | None = None,
     nodata_mask: Optional[np.ndarray] = None,
     block_shape: tuple[int, int] = (512, 512),
     **tqdm_kwargs,
@@ -480,7 +364,9 @@ def create_ps_scr(
     window_size : int, optional
         Box-car filter window size for computing phase residues. Default is 11.
     model : {"constant", "gaussian"}, optional
-        Phase distribution model for SCR estimation. Default is "constant".
+        Phase distribution model for SCR estimation. Default is "gaussian".
+    reference_idx : int or None, optional
+        Index of the reference SLC. If None, uses N // 2. Default is None.
     nodata_mask : Optional[np.ndarray]
         If provided, skips computing over areas where the mask is False.
     block_shape : tuple[int, int], optional
@@ -531,8 +417,13 @@ def create_ps_scr(
                 min_count=len(magnitude_cur),
             )
 
-            # SCR estimation (reuse existing calc_scr_block)
-            scr_block = calc_scr_block(cur_data, window_size=window_size, model=model)
+            # SCR estimation
+            scr_block = calc_scr_block(
+                cur_data,
+                window_size=window_size,
+                model=model,
+                reference_idx=reference_idx,
+            )
 
             # PS from SCR threshold
             ps = (scr_block > scr_threshold).astype(FILE_DTYPES["ps"])

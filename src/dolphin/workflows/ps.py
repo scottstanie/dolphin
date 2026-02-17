@@ -114,6 +114,7 @@ def run(
         scr_threshold=scr_opts.scr_threshold,
         scr_window_size=scr_opts.window_size,
         scr_model=scr_opts.model,
+        scr_reference_idx=scr_opts.reference_idx,
     )
     if cfg.ps_options.method.value == "scr":
         output_file_list.append(scr_opts._output_file)

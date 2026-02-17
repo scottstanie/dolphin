@@ -51,7 +51,8 @@ def create_ps(
     output_scr_file: Optional[Filename] = None,
     scr_threshold: float = 2.0,
     scr_window_size: int = 11,
-    scr_model: Literal["constant", "gaussian"] = "constant",
+    scr_model: Literal["constant", "gaussian", "coherence"] = "constant",
+    scr_reference_idx: int | None = None,
     **tqdm_kwargs,
 ):
     """Create the PS mask file using the specified method.
@@ -99,6 +100,8 @@ def create_ps(
     scr_model : str, optional
         Phase distribution model for SCR: "constant" or "gaussian". Default is
         "constant".
+    scr_reference_idx : int or None, optional
+        Index of the reference SLC for SCR interferograms. If None, uses N // 2.
     **tqdm_kwargs : optional
         Arguments to pass to `tqdm`, (e.g. `position=n` for n parallel bars)
         See https://tqdm.github.io/docs/tqdm/#tqdm-objects for all options.
@@ -118,6 +121,7 @@ def create_ps(
             scr_threshold=scr_threshold,
             window_size=scr_window_size,
             model=scr_model,
+            reference_idx=scr_reference_idx,
             nodata_mask=nodata_mask,
             block_shape=block_shape,
             **tqdm_kwargs,

@@ -44,7 +44,8 @@ class ScrOptions(BaseModel, extra="forbid"):
 
     The SCR method estimates the ratio of deterministic signal power to
     random clutter power at each pixel, using phase residues from
-    interferograms. See Agram & Simons (2015) for details.
+    single-master interferograms. See Shanker & Zebker (2007),
+    doi:10.1029/2007GL030806.
     """
 
     _output_file: Path = PrivateAttr(Path("PS/scr.tif"))
@@ -62,12 +63,21 @@ class ScrOptions(BaseModel, extra="forbid"):
         description="Box-car filter window size for computing phase residues.",
         gt=0,
     )
-    model: Literal["constant", "gaussian"] = Field(
-        "constant",
+    model: Literal["constant", "gaussian", "coherence"] = Field(
+        "gaussian",
         description=(
-            "Phase distribution model for SCR estimation. 'constant' assumes a"
-            " deterministic signal with Gaussian noise; 'gaussian' assumes both"
-            " signal and noise are complex Gaussian."
+            "Phase distribution model for SCR estimation. 'gaussian' uses the"
+            " analytical PDF from Shanker & Zebker (2007), Eq. 1. 'constant'"
+            " assumes a deterministic signal and uses numerical integration."
+            " 'coherence' uses the temporal coherence magnitude as a"
+            " method-of-moments estimator (faster, more robust for small stacks)."
+        ),
+    )
+    reference_idx: Optional[int] = Field(
+        None,
+        description=(
+            "Index of the reference SLC for single-master interferogram formation."
+            " If None, uses the middle of the stack (N // 2). Default is None."
         ),
     )
 

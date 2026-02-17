@@ -11,7 +11,7 @@ from dolphin.ps._amp_dispersion import (
     create_ps,
     multilook_ps_files,
 )
-from dolphin.ps._scr import calc_scr_block, create_scr
+from dolphin.ps._scr import calc_scr_block, create_ps_scr, create_scr
 
 __all__ = [
     "NODATA_VALUES",
@@ -20,6 +20,7 @@ __all__ = [
     "combine_amplitude_dispersions",
     "combine_means",
     "create_ps",
+    "create_ps_scr",
     "create_scr",
     "multilook_ps_files",
 ]

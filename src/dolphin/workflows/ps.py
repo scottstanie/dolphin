@@ -98,6 +98,7 @@ def run(
     )
     nodata_mask = masking.load_mask_as_numpy(mask_filename) if mask_filename else None
 
+    scr_opts = cfg.ps_options.scr
     logger.info(f"Creating persistent scatterer file {ps_output}")
     dolphin.ps.create_ps(
         reader=vrt_stack,
@@ -108,27 +109,14 @@ def run(
         amp_dispersion_threshold=cfg.ps_options.amp_dispersion_threshold,
         nodata_mask=nodata_mask,
         block_shape=cfg.worker_settings.block_shape,
+        method=cfg.ps_options.method.value,
+        output_scr_file=scr_opts._output_file,
+        scr_threshold=scr_opts.scr_threshold,
+        scr_window_size=scr_opts.window_size,
+        scr_model=scr_opts.model,
     )
-
-    # Optionally compute SCR
-    scr_opts = cfg.ps_options.scr
-    if scr_opts.enabled:
-        scr_output = scr_opts._output_file
-        if scr_output.exists():
-            logger.info(f"Skipping existing SCR file {scr_output}")
-        else:
-            logger.info(f"Computing signal-to-clutter ratio: {scr_output}")
-            dolphin.ps.create_scr(
-                reader=vrt_stack,
-                output_file=scr_output,
-                like_filename=vrt_stack.outfile,
-                scr_threshold=scr_opts.scr_threshold,
-                window_size=scr_opts.window_size,
-                model=scr_opts.model,
-                nodata_mask=nodata_mask,
-                block_shape=cfg.worker_settings.block_shape,
-            )
-        output_file_list.append(scr_output)
+    if cfg.ps_options.method.value == "scr":
+        output_file_list.append(scr_opts._output_file)
 
     # Save a looked version of the PS mask too
     strides_dict = cfg.output_options.strides.model_dump()

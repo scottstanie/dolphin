@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-from osgeo import gdal
 
 import dolphin.ps
 from dolphin import io
@@ -28,8 +27,7 @@ def deterministic_slc_stack():
 
     # Random clutter (distributed scatterers)
     noise = sigma * (
-        np.random.randn(n_slc, nrow, ncol)
-        + 1j * np.random.randn(n_slc, nrow, ncol)
+        np.random.randn(n_slc, nrow, ncol) + 1j * np.random.randn(n_slc, nrow, ncol)
     )
 
     # Add a strong deterministic signal to some pixels (PS candidates)

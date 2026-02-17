@@ -153,6 +153,7 @@ def run(
         except IndexError:
             existing_amp = existing_disp = None
 
+        scr_opts = cfg.ps_options.scr
         kwargs = tqdm_kwargs | {"desc": f"PS ({ps_output.parent})"}
         ps.create_ps(
             reader=vrt_stack,
@@ -165,28 +166,13 @@ def run(
             nodata_mask=nodata_mask,
             existing_amp_mean_file=existing_amp,
             block_shape=cfg.worker_settings.block_shape,
+            method=cfg.ps_options.method.value,
+            output_scr_file=scr_opts._output_file,
+            scr_threshold=scr_opts.scr_threshold,
+            scr_window_size=scr_opts.window_size,
+            scr_model=scr_opts.model,
             **kwargs,
         )
-
-    # Optionally compute SCR
-    scr_opts = cfg.ps_options.scr
-    if scr_opts.enabled:
-        scr_output = scr_opts._output_file
-        if scr_output.exists():
-            logger.info(f"Skipping existing SCR file {scr_output}")
-        else:
-            logger.info(f"Computing signal-to-clutter ratio: {scr_output}")
-            ps.create_scr(
-                reader=vrt_stack,
-                output_file=scr_output,
-                like_filename=vrt_stack.outfile,
-                scr_threshold=scr_opts.scr_threshold,
-                window_size=scr_opts.window_size,
-                model=scr_opts.model,
-                nodata_mask=nodata_mask,
-                block_shape=cfg.worker_settings.block_shape,
-                **tqdm_kwargs,
-            )
 
     # Save a looked version of the PS mask too
     strides_dict = cfg.output_options.strides.model_dump()

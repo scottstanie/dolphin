@@ -20,7 +20,7 @@ from dolphin._types import Bbox
 from dolphin.io import DEFAULT_HDF5_OPTIONS, DEFAULT_TIFF_OPTIONS
 from dolphin.stack import CompressedSlcPlan
 
-from ._enums import ShpMethod
+from ._enums import PsMethod, ShpMethod
 from ._yaml_model import YamlModel
 
 logger = logging.getLogger("dolphin")
@@ -49,10 +49,6 @@ class ScrOptions(BaseModel, extra="forbid"):
 
     _output_file: Path = PrivateAttr(Path("PS/scr.tif"))
 
-    enabled: bool = Field(
-        False,
-        description="Enable SCR-based PS selection in addition to amplitude dispersion.",
-    )
     scr_threshold: float = Field(
         2.0,
         description=(
@@ -84,6 +80,14 @@ class PsOptions(BaseModel, extra="forbid"):
     _amp_dispersion_file: Path = PrivateAttr(Path("PS/amp_dispersion.tif"))
     _amp_mean_file: Path = PrivateAttr(Path("PS/amp_mean.tif"))
 
+    method: PsMethod = Field(
+        PsMethod.AMPLITUDE_DISPERSION,
+        description=(
+            "Method for PS selection. 'amplitude_dispersion' uses the classical"
+            " amplitude dispersion index. 'scr' uses the signal-to-clutter ratio"
+            " estimated from phase residues (Agram & Simons, 2015)."
+        ),
+    )
     amp_dispersion_threshold: float = Field(
         0.25,
         description="Amplitude dispersion threshold to consider a pixel a PS.",

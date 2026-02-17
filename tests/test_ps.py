@@ -167,3 +167,25 @@ def test_single_group():
     )
     assert_allclose(result_disp, amp_disp, rtol=1e-5)
     assert_allclose(result_mean, amp_mean, rtol=1e-5)
+
+
+def test_create_ps_scr(tmp_path, vrt_stack):
+    ps_mask_file = tmp_path / "ps_pixels.tif"
+    amp_dispersion_file = tmp_path / "amp_disp.tif"
+    amp_mean_file = tmp_path / "amp_mean.tif"
+    scr_file = tmp_path / "scr.tif"
+
+    dolphin.ps.create_ps(
+        reader=vrt_stack,
+        like_filename=vrt_stack.outfile,
+        output_amp_dispersion_file=amp_dispersion_file,
+        output_amp_mean_file=amp_mean_file,
+        output_file=ps_mask_file,
+        method="scr",
+        output_scr_file=scr_file,
+        scr_threshold=2.0,
+    )
+    assert io.get_raster_dtype(ps_mask_file) == np.uint8
+    assert io.get_raster_dtype(amp_mean_file) == np.float32
+    assert io.get_raster_dtype(amp_dispersion_file) == np.float32
+    assert io.get_raster_dtype(scr_file) == np.float32

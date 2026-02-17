@@ -1,9 +1,17 @@
 from enum import Enum
 
 __all__ = [
+    "PsMethod",
     "ShpMethod",
     "UnwrapMethod",
 ]
+
+
+class PsMethod(str, Enum):
+    """Method for selecting persistent scatterers."""
+
+    AMPLITUDE_DISPERSION = "amplitude_dispersion"
+    SCR = "scr"
 
 
 class ShpMethod(str, Enum):

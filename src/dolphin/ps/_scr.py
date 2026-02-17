@@ -27,7 +27,7 @@ from dolphin import io
 from dolphin._types import Filename
 from dolphin.io import EagerLoader, StackReader, repack_raster
 
-from ._amp_dispersion import FILE_DTYPES, NODATA_VALUES
+from ._amp_dispersion import FILE_DTYPES, NODATA_VALUES, REPACK_OPTIONS, calc_ps_block
 
 gdal.UseExceptions()
 
@@ -43,7 +43,6 @@ def create_scr(
     reader: StackReader,
     output_file: Filename,
     like_filename: Filename,
-    scr_threshold: float = 2.0,
     window_size: int = 11,
     model: Literal["constant", "gaussian"] = "constant",
     nodata_mask: Optional[np.ndarray] = None,
@@ -60,8 +59,6 @@ def create_scr(
         The output SCR file (dtype: float32).
     like_filename : Filename
         The filename to use for the output file's spatial reference.
-    scr_threshold : float, optional
-        The SCR threshold to consider a pixel a PS. Default is 2.0.
     window_size : int, optional
         Box-car filter window size for computing phase residues. Default is 11.
     model : {"constant", "gaussian"}, optional
@@ -90,9 +87,7 @@ def create_scr(
 
         if cur_data.shape[0] < 2:
             # Need at least 2 SLCs to form an interferogram
-            scr_block = np.full(
-                (cur_rows, cur_cols), SCR_NODATA, dtype=SCR_DTYPE
-            )
+            scr_block = np.full((cur_rows, cur_cols), SCR_NODATA, dtype=SCR_DTYPE)
         elif not (np.all(cur_data == 0) or np.all(np.isnan(cur_data))):
             scr_block = calc_scr_block(
                 cur_data,
@@ -100,9 +95,7 @@ def create_scr(
                 model=model,
             )
         else:
-            scr_block = np.full(
-                (cur_rows, cur_cols), SCR_NODATA, dtype=SCR_DTYPE
-            )
+            scr_block = np.full((cur_rows, cur_cols), SCR_NODATA, dtype=SCR_DTYPE)
 
         writer.queue_write(scr_block, output_file, rows.start, cols.start)
 
@@ -149,7 +142,7 @@ def calc_scr_block(
         msg = f"Expected 3D SLC block (n_slc, rows, cols), got shape {slc_block.shape}"
         raise ValueError(msg)
 
-    n_slc, nrow, ncol = slc_block.shape
+    n_slc, _nrow, _ncol = slc_block.shape
     if n_slc < 2:
         msg = "Need at least 2 SLCs to compute SCR"
         raise ValueError(msg)
@@ -159,9 +152,7 @@ def calc_scr_block(
 
     # Remove mean phase bias across interferograms
     cmean = np.mean(np.exp(1j * phase_residues), axis=0)
-    phase_residues = np.angle(
-        np.exp(1j * phase_residues) * np.conj(cmean)[np.newaxis]
-    )
+    phase_residues = np.angle(np.exp(1j * phase_residues) * np.conj(cmean)[np.newaxis])
 
     # Estimate SCR per pixel via MLE
     scr = _estimate_scr_mle(phase_residues, model=model)
@@ -198,12 +189,8 @@ def _compute_phase_residues(
         ifg = slc_block[i + 1] * np.conj(slc_block[i])
 
         # Boxcar filter on real and imaginary parts separately
-        filtered_real = uniform_filter(
-            ifg.real.astype(np.float64), size=window_size
-        )
-        filtered_imag = uniform_filter(
-            ifg.imag.astype(np.float64), size=window_size
-        )
+        filtered_real = uniform_filter(ifg.real.astype(np.float64), size=window_size)
+        filtered_imag = uniform_filter(ifg.imag.astype(np.float64), size=window_size)
         ifg_filtered = filtered_real + 1j * filtered_imag
 
         # Phase residue: subtract filtered phase from original
@@ -240,7 +227,6 @@ def _estimate_scr_mle(
     rho = np.linspace(0.0, 0.99, 50)
     scr_candidates = rho / (1 - rho)
 
-    orig_shape = phase_residues.shape
     if phase_residues.ndim == 3:
         n_ifg, nrow, ncol = phase_residues.shape
         phi = phase_residues.reshape(n_ifg, -1)
@@ -253,9 +239,7 @@ def _estimate_scr_mle(
     if model == "constant":
         pdf_lookup = _build_constant_pdf_lookup(scr_candidates)
 
-    log_likelihood = np.full(
-        (len(scr_candidates), n_pixels), -np.inf, dtype=np.float64
-    )
+    log_likelihood = np.full((len(scr_candidates), n_pixels), -np.inf, dtype=np.float64)
     for i, scr_val in enumerate(scr_candidates):
         if model == "gaussian":
             p = _phase_pdf_gaussian(scr_val, phi)
@@ -305,8 +289,10 @@ def _phase_pdf_gaussian(gamma: float, phi: np.ndarray) -> np.ndarray:
     """
     rho = gamma / (1 + gamma)
     beta = rho * np.cos(phi)
-    f = (1 - rho**2) / (2 * np.pi * (1 - beta**2)) * (
-        1 + beta * np.arccos(-beta) / np.sqrt(1 - beta**2)
+    f = (
+        (1 - rho**2)
+        / (2 * np.pi * (1 - beta**2))
+        * (1 + beta * np.arccos(-beta) / np.sqrt(1 - beta**2))
     )
     return f
 
@@ -452,3 +438,133 @@ def _phase_pdf_constant_lookup(
     idx = np.round((phi + np.pi) / (2 * np.pi / n_bins)).astype(int)
     idx = np.clip(idx, 0, n_bins)
     return lookup_table[idx]
+
+
+def create_ps_scr(
+    *,
+    reader: StackReader,
+    output_file: Filename,
+    output_amp_mean_file: Filename,
+    output_amp_dispersion_file: Filename,
+    output_scr_file: Filename,
+    like_filename: Filename,
+    scr_threshold: float = 2.0,
+    window_size: int = 11,
+    model: Literal["constant", "gaussian"] = "constant",
+    nodata_mask: Optional[np.ndarray] = None,
+    block_shape: tuple[int, int] = (512, 512),
+    **tqdm_kwargs,
+) -> None:
+    """Create PS mask using signal-to-clutter ratio thresholding.
+
+    Performs a single pass through the SLC stack, computing both amplitude
+    statistics and SCR per block. The PS mask is determined by thresholding
+    the SCR values rather than amplitude dispersion.
+
+    Parameters
+    ----------
+    reader : StackReader
+        A dataset reader for the 3D SLC stack.
+    output_file : Filename
+        The output PS file (dtype: Byte).
+    output_amp_mean_file : Filename
+        The output mean amplitude file.
+    output_amp_dispersion_file : Filename
+        The output amplitude dispersion file.
+    output_scr_file : Filename
+        The output SCR file (dtype: float32).
+    like_filename : Filename
+        The filename to use for the output files' spatial reference.
+    scr_threshold : float, optional
+        SCR threshold to consider a pixel a PS. Default is 2.0.
+    window_size : int, optional
+        Box-car filter window size for computing phase residues. Default is 11.
+    model : {"constant", "gaussian"}, optional
+        Phase distribution model for SCR estimation. Default is "constant".
+    nodata_mask : Optional[np.ndarray]
+        If provided, skips computing over areas where the mask is False.
+    block_shape : tuple[int, int], optional
+        The 2D block size to load all bands at a time. Default is (512, 512).
+    **tqdm_kwargs : optional
+        Arguments to pass to `tqdm`.
+
+    """
+    # Initialize output files
+    output_info = {
+        "ps": (output_file, FILE_DTYPES["ps"], NODATA_VALUES["ps"]),
+        "amp_dispersion": (
+            output_amp_dispersion_file,
+            FILE_DTYPES["amp_dispersion"],
+            NODATA_VALUES["amp_dispersion"],
+        ),
+        "amp_mean": (
+            output_amp_mean_file,
+            FILE_DTYPES["amp_mean"],
+            NODATA_VALUES["amp_mean"],
+        ),
+        "scr": (output_scr_file, SCR_DTYPE, SCR_NODATA),
+    }
+    for fn, dtype, nodata in output_info.values():
+        io.write_arr(
+            arr=None,
+            like_filename=like_filename,
+            output_name=fn,
+            nbands=1,
+            dtype=dtype,
+            nodata=nodata,
+        )
+
+    magnitude = np.zeros((reader.shape[0], *block_shape), dtype=np.float32)
+
+    writer = io.BackgroundBlockWriter()
+    block_gen = EagerLoader(reader, block_shape=block_shape, nodata_mask=nodata_mask)
+    for cur_data, (rows, cols) in block_gen.iter_blocks(**tqdm_kwargs):
+        cur_rows, cur_cols = cur_data.shape[-2:]
+
+        is_all_nodata = np.all(cur_data == 0) or np.all(np.isnan(cur_data))
+        if not is_all_nodata and cur_data.shape[0] >= 2:
+            # Amplitude statistics (reuse existing calc_ps_block)
+            magnitude_cur = np.abs(cur_data, out=magnitude[:, :cur_rows, :cur_cols])
+            mean, amp_disp, _ = calc_ps_block(
+                magnitude_cur,
+                amp_dispersion_threshold=0.25,  # not used for PS decision
+                min_count=len(magnitude_cur),
+            )
+
+            # SCR estimation (reuse existing calc_scr_block)
+            scr_block = calc_scr_block(cur_data, window_size=window_size, model=model)
+
+            # PS from SCR threshold
+            ps = (scr_block > scr_threshold).astype(FILE_DTYPES["ps"])
+            ps[scr_block == SCR_NODATA] = NODATA_VALUES["ps"]
+        else:
+            ps = np.full(
+                (cur_rows, cur_cols), NODATA_VALUES["ps"], dtype=FILE_DTYPES["ps"]
+            )
+            mean = np.full(
+                (cur_rows, cur_cols),
+                NODATA_VALUES["amp_mean"],
+                dtype=FILE_DTYPES["amp_mean"],
+            )
+            amp_disp = np.full(
+                (cur_rows, cur_cols),
+                NODATA_VALUES["amp_dispersion"],
+                dtype=FILE_DTYPES["amp_dispersion"],
+            )
+            scr_block = np.full((cur_rows, cur_cols), SCR_NODATA, dtype=SCR_DTYPE)
+
+        writer.queue_write(mean, output_amp_mean_file, rows.start, cols.start)
+        writer.queue_write(amp_disp, output_amp_dispersion_file, rows.start, cols.start)
+        writer.queue_write(scr_block, output_scr_file, rows.start, cols.start)
+        writer.queue_write(ps, output_file, rows.start, cols.start)
+
+    logger.info(f"Waiting to write {writer.num_queued} blocks of data.")
+    writer.notify_finished()
+
+    # Repack for better compression
+    logger.info("Repacking PS/SCR rasters for better compression")
+    file_list = [output_file, output_amp_dispersion_file, output_amp_mean_file]
+    for fn, opt in zip(file_list, REPACK_OPTIONS.values(), strict=False):
+        repack_raster(Path(fn), output_dir=None, **opt)
+    repack_raster(Path(output_scr_file), output_dir=None, **_SCR_REPACK_OPTIONS)
+    logger.info("Finished writing PS files (SCR method)")

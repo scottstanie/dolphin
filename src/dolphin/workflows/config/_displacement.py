@@ -190,12 +190,16 @@ class DisplacementWorkflow(WorkflowBase):
 
         if self.input_options.wavelength is None and self.cslc_file_list:
             # Try to infer the wavelength from filenames
-            try:
-                get_burst_id(self.cslc_file_list[-1])
-                # The Burst ID was recognized for OPERA-S1 SLCs: use S1 wavelength
-                self.input_options.wavelength = constants.SENTINEL_1_WAVELENGTH
-            except ValueError:
-                pass
+            if "CAPELLA" in self.cslc_file_list[-1].name.upper():
+                self.input_options.wavelength = constants.CAPELLA_WAVELENGTH
+            else:
+                # Try/catch the OPERA-S1 burst naming convention
+                try:
+                    get_burst_id(self.cslc_file_list[-1])
+                    # The Burst ID was recognized for OPERA-S1 SLCs: use S1 wavelength
+                    self.input_options.wavelength = constants.SENTINEL_1_WAVELENGTH
+                except ValueError:
+                    pass
 
         # Ensure outputs from workflow steps are within work directory.
         if not self.keep_paths_relative:

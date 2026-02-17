@@ -32,10 +32,48 @@ __all__ = [
     "OutputOptions",
     "PhaseLinkingOptions",
     "PsOptions",
+    "ScrOptions",
     "Strides",
     "TimeseriesOptions",
     "WorkerSettings",
 ]
+
+
+class ScrOptions(BaseModel, extra="forbid"):
+    """Options for Signal-to-Clutter Ratio (SCR) PS selection.
+
+    The SCR method estimates the ratio of deterministic signal power to
+    random clutter power at each pixel, using phase residues from
+    interferograms. See Agram & Simons (2015) for details.
+    """
+
+    _output_file: Path = PrivateAttr(Path("PS/scr.tif"))
+
+    enabled: bool = Field(
+        False,
+        description="Enable SCR-based PS selection in addition to amplitude dispersion.",
+    )
+    scr_threshold: float = Field(
+        2.0,
+        description=(
+            "SCR threshold to consider a pixel a PS. Higher values are more"
+            " selective. Typical values range from 1 to 5."
+        ),
+        gt=0.0,
+    )
+    window_size: int = Field(
+        11,
+        description="Box-car filter window size for computing phase residues.",
+        gt=0,
+    )
+    model: Literal["constant", "gaussian"] = Field(
+        "constant",
+        description=(
+            "Phase distribution model for SCR estimation. 'constant' assumes a"
+            " deterministic signal with Gaussian noise; 'gaussian' assumes both"
+            " signal and noise are complex Gaussian."
+        ),
+    )
 
 
 class PsOptions(BaseModel, extra="forbid"):
@@ -50,6 +88,10 @@ class PsOptions(BaseModel, extra="forbid"):
         0.25,
         description="Amplitude dispersion threshold to consider a pixel a PS.",
         ge=0.0,
+    )
+    scr: ScrOptions = Field(
+        default_factory=ScrOptions,
+        description="Options for SCR-based PS selection.",
     )
 
 

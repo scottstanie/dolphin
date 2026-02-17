@@ -121,13 +121,17 @@ def run(
     # Save a looked version of the PS mask too
     strides_dict = cfg.output_options.strides.model_dump()
     if compute_looked:
-        ps_looked_file, amp_disp_looked = dolphin.ps.multilook_ps_files(
+        scr_file = scr_opts._output_file if scr_opts._output_file.exists() else None
+        ps_looked_file, amp_disp_looked, scr_looked = dolphin.ps.multilook_ps_files(
             strides=strides_dict,
             ps_mask_file=cfg.ps_options._output_file,
             amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
+            scr_file=scr_file,
         )
         output_file_list.append(ps_looked_file)
         output_file_list.append(amp_disp_looked)
+        if scr_looked is not None:
+            output_file_list.append(scr_looked)
 
     # Print the maximum memory usage for each worker
     max_mem = get_max_memory_usage(units="GB")

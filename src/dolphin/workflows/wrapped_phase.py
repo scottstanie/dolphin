@@ -176,10 +176,13 @@ def run(
 
     # Save a looked version of the PS mask too
     strides_dict = cfg.output_options.strides.model_dump()
-    ps_looked_file, amp_disp_looked_file = ps.multilook_ps_files(
+    scr_opts = cfg.ps_options.scr
+    scr_file = scr_opts._output_file if scr_opts._output_file.exists() else None
+    ps_looked_file, amp_disp_looked_file, _ = ps.multilook_ps_files(
         strides=strides_dict,
         ps_mask_file=cfg.ps_options._output_file,
         amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
+        scr_file=scr_file,
     )
 
     # #########################

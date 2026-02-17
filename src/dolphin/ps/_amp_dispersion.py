@@ -312,7 +312,8 @@ def multilook_ps_files(
     strides: dict[str, int],
     ps_mask_file: Filename,
     amp_dispersion_file: Filename,
-) -> tuple[Path, Path]:
+    scr_file: Optional[Filename] = None,
+) -> tuple[Path, Path, Optional[Path]]:
     """Create a multilooked version of the full-res PS mask/amplitude dispersion.
 
     Parameters
@@ -323,6 +324,9 @@ def multilook_ps_files(
         Name of input full-res uint8 PS mask file
     amp_dispersion_file : Filename
         Name of input full-res float32 amplitude dispersion file
+    scr_file : Optional[Filename]
+        Name of input full-res float32 SCR file. If provided, a multilooked
+        version will be created.
 
     Returns
     -------
@@ -332,11 +336,14 @@ def multilook_ps_files(
     output_amp_disp_file : Path
         Multilooked amplitude dispersion file
         Similar naming scheme to `output_ps_file`
+    output_scr_file : Optional[Path]
+        Multilooked SCR file, or None if `scr_file` was not provided.
 
     """
     if strides == {"x": 1, "y": 1}:
         logger.info("No striding request, skipping multilook.")
-        return Path(ps_mask_file), Path(amp_dispersion_file)
+        scr_path = Path(scr_file) if scr_file is not None else None
+        return Path(ps_mask_file), Path(amp_dispersion_file), scr_path
     full_cols, full_rows = io.get_raster_xysize(ps_mask_file)
     out_rows, out_cols = full_rows // strides["y"], full_cols // strides["x"]
 
@@ -388,7 +395,37 @@ def multilook_ps_files(
             strides=strides,
             nodata=NODATA_VALUES["amp_dispersion"],
         )
-    return ps_out_path, amp_disp_out_path
+
+    # Optionally multilook the SCR file
+    scr_out_path: Optional[Path] = None
+    if scr_file is not None:
+        from dolphin.ps._scr import SCR_NODATA
+
+        scr_suffix = Path(scr_file).suffix
+        scr_out_path = Path(str(scr_file).replace(scr_suffix, f"_looked{scr_suffix}"))
+        if scr_out_path.exists():
+            logger.info(f"{scr_out_path} exists, skipping.")
+        else:
+            scr = io.load_gdal(scr_file, masked=True)
+            # Use nanmax: the strongest scatterer (highest SCR) in the window
+            scr_looked = utils.take_looks(
+                scr,
+                strides["y"],
+                strides["x"],
+                func_type="nanmax",
+                edge_strategy="pad",
+            )
+            scr_looked = scr_looked[:out_rows, :out_cols]
+            scr_looked = scr_looked.filled(SCR_NODATA)
+            io.write_arr(
+                arr=scr_looked,
+                like_filename=scr_file,
+                output_name=scr_out_path,
+                strides=strides,
+                nodata=SCR_NODATA,
+            )
+
+    return ps_out_path, amp_disp_out_path, scr_out_path
 
 
 def combine_means(means: ArrayLike, N: ArrayLike) -> np.ndarray:

@@ -335,6 +335,7 @@ def create_ps_scr(
     window_size: int = 11,
     model: Literal["constant", "gaussian", "coherence"] = "gaussian",
     reference_idx: int | None = None,
+    min_count: int | None = None,
     nodata_mask: Optional[np.ndarray] = None,
     block_shape: tuple[int, int] = (512, 512),
     **tqdm_kwargs,
@@ -367,6 +368,10 @@ def create_ps_scr(
         Phase distribution model for SCR estimation. Default is "gaussian".
     reference_idx : int or None, optional
         Index of the reference SLC. If None, uses N // 2. Default is None.
+    min_count : int or None, optional
+        Minimum number of valid (non-zero) SLCs required per pixel. Pixels
+        with fewer valid acquisitions have their SCR set to nodata.
+        Default is ``int(0.9 * n_slc)``.
     nodata_mask : Optional[np.ndarray]
         If provided, skips computing over areas where the mask is False.
     block_shape : tuple[int, int], optional
@@ -400,7 +405,11 @@ def create_ps_scr(
             nodata=nodata,
         )
 
-    magnitude = np.zeros((reader.shape[0], *block_shape), dtype=np.float32)
+    n_slc = reader.shape[0]
+    if min_count is None:
+        min_count = int(0.9 * n_slc)
+
+    magnitude = np.zeros((n_slc, *block_shape), dtype=np.float32)
 
     writer = io.BackgroundBlockWriter()
     block_gen = EagerLoader(reader, block_shape=block_shape, nodata_mask=nodata_mask)
@@ -414,7 +423,7 @@ def create_ps_scr(
             mean, amp_disp, _ = calc_ps_block(
                 magnitude_cur,
                 amp_dispersion_threshold=0.25,  # not used for PS decision
-                min_count=len(magnitude_cur),
+                min_count=min_count,
             )
 
             # SCR estimation
@@ -424,6 +433,13 @@ def create_ps_scr(
                 model=model,
                 reference_idx=reference_idx,
             )
+
+            # Mask pixels with too few valid SLCs
+            count = np.count_nonzero(magnitude_cur > 0, axis=0)
+            insufficient = count < min_count
+            if np.any(insufficient):
+                scr_block = scr_block.copy()
+                scr_block[insufficient] = SCR_NODATA
 
             # PS from SCR threshold
             ps = (scr_block > scr_threshold).astype(FILE_DTYPES["ps"])

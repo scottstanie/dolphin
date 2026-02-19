@@ -20,7 +20,7 @@ from dolphin._types import Bbox
 from dolphin.io import DEFAULT_HDF5_OPTIONS, DEFAULT_TIFF_OPTIONS
 from dolphin.stack import CompressedSlcPlan
 
-from ._enums import ShpMethod
+from ._enums import PsMethod, ShpMethod
 from ._yaml_model import YamlModel
 
 logger = logging.getLogger("dolphin")
@@ -32,10 +32,54 @@ __all__ = [
     "OutputOptions",
     "PhaseLinkingOptions",
     "PsOptions",
+    "ScrOptions",
     "Strides",
     "TimeseriesOptions",
     "WorkerSettings",
 ]
+
+
+class ScrOptions(BaseModel, extra="forbid"):
+    """Options for Signal-to-Clutter Ratio (SCR) PS selection.
+
+    The SCR method estimates the ratio of deterministic signal power to
+    random clutter power at each pixel, using phase residues from
+    single-master interferograms. See Shanker & Zebker (2007),
+    doi:10.1029/2007GL030806.
+    """
+
+    _output_file: Path = PrivateAttr(Path("PS/scr.tif"))
+
+    scr_threshold: float = Field(
+        2.0,
+        description=(
+            "SCR threshold to consider a pixel a PS. Higher values are more"
+            " selective. Typical values range from 1 to 5."
+        ),
+        gt=0.0,
+    )
+    window_size: int = Field(
+        11,
+        description="Box-car filter window size for computing phase residues.",
+        gt=0,
+    )
+    model: Literal["constant", "gaussian", "coherence"] = Field(
+        "gaussian",
+        description=(
+            "Phase distribution model for SCR estimation. 'gaussian' uses the"
+            " analytical PDF from Shanker & Zebker (2007), Eq. 1. 'constant'"
+            " assumes a deterministic signal and uses numerical integration."
+            " 'coherence' uses the temporal coherence magnitude as a"
+            " method-of-moments estimator (faster, more robust for small stacks)."
+        ),
+    )
+    reference_idx: Optional[int] = Field(
+        None,
+        description=(
+            "Index of the reference SLC for single-master interferogram formation."
+            " If None, uses the middle of the stack (N // 2). Default is None."
+        ),
+    )
 
 
 class PsOptions(BaseModel, extra="forbid"):
@@ -46,10 +90,22 @@ class PsOptions(BaseModel, extra="forbid"):
     _amp_dispersion_file: Path = PrivateAttr(Path("PS/amp_dispersion.tif"))
     _amp_mean_file: Path = PrivateAttr(Path("PS/amp_mean.tif"))
 
+    method: PsMethod = Field(
+        PsMethod.AMPLITUDE_DISPERSION,
+        description=(
+            "Method for PS selection. 'amplitude_dispersion' uses the classical"
+            " amplitude dispersion index. 'scr' uses the signal-to-clutter ratio"
+            " estimated from phase residues (Agram & Simons, 2015)."
+        ),
+    )
     amp_dispersion_threshold: float = Field(
         0.25,
         description="Amplitude dispersion threshold to consider a pixel a PS.",
         ge=0.0,
+    )
+    scr: ScrOptions = Field(
+        default_factory=ScrOptions,
+        description="Options for SCR-based PS selection.",
     )
 
 

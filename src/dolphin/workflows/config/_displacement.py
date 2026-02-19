@@ -245,6 +245,7 @@ class DisplacementWorkflow(WorkflowBase):
         ps_opts._amp_dispersion_file = work_dir / ps_opts._amp_dispersion_file
         ps_opts._amp_mean_file = work_dir / ps_opts._amp_mean_file
         ps_opts._output_file = work_dir / ps_opts._output_file
+        ps_opts.scr._output_file = work_dir / ps_opts.scr._output_file
 
         self.timeseries_options._velocity_file = (
             work_dir / self.timeseries_options._velocity_file

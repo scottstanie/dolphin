@@ -6,7 +6,7 @@ import logging
 import shutil
 import warnings
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Literal, Optional, Sequence
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -47,9 +47,17 @@ def create_ps(
     nodata_mask: Optional[np.ndarray] = None,
     update_existing: bool = False,
     block_shape: tuple[int, int] = (512, 512),
+    method: str = "amplitude_dispersion",
+    output_scr_file: Optional[Filename] = None,
+    scr_threshold: float = 2.0,
+    scr_window_size: int = 11,
+    scr_model: Literal["constant", "gaussian", "coherence"] = "constant",
+    scr_reference_idx: int | None = None,
     **tqdm_kwargs,
 ):
-    """Create the amplitude dispersion, mean, and PS files.
+    """Create the PS mask file using the specified method.
+
+    Dispatches to either amplitude dispersion or SCR-based PS selection.
 
     Parameters
     ----------
@@ -80,11 +88,46 @@ def create_ps(
     block_shape : tuple[int, int], optional
         The 2D block size to load all bands at a time.
         Default is (512, 512)
+    method : str, optional
+        PS selection method: "amplitude_dispersion" or "scr". Default is
+        "amplitude_dispersion".
+    output_scr_file : Optional[Filename], optional
+        The output SCR file. Required when ``method="scr"``.
+    scr_threshold : float, optional
+        SCR threshold for PS selection. Default is 2.0.
+    scr_window_size : int, optional
+        Box-car filter window size for SCR computation. Default is 11.
+    scr_model : str, optional
+        Phase distribution model for SCR: "constant" or "gaussian". Default is
+        "constant".
+    scr_reference_idx : int or None, optional
+        Index of the reference SLC for SCR interferograms. If None, uses N // 2.
     **tqdm_kwargs : optional
         Arguments to pass to `tqdm`, (e.g. `position=n` for n parallel bars)
         See https://tqdm.github.io/docs/tqdm/#tqdm-objects for all options.
 
     """
+    if method == "scr":
+        from dolphin.ps._scr import create_ps_scr
+
+        assert output_scr_file is not None, "output_scr_file required for SCR method"
+        create_ps_scr(
+            reader=reader,
+            output_file=output_file,
+            output_amp_mean_file=output_amp_mean_file,
+            output_amp_dispersion_file=output_amp_dispersion_file,
+            output_scr_file=output_scr_file,
+            like_filename=like_filename,
+            scr_threshold=scr_threshold,
+            window_size=scr_window_size,
+            model=scr_model,
+            reference_idx=scr_reference_idx,
+            nodata_mask=nodata_mask,
+            block_shape=block_shape,
+            **tqdm_kwargs,
+        )
+        return
+
     if existing_amp_dispersion_file and existing_amp_mean_file and not update_existing:
         logger.info("Using existing amplitude dispersion file, skipping calculation.")
         # Just use what's there, copy to the expected output locations
@@ -273,7 +316,8 @@ def multilook_ps_files(
     strides: dict[str, int],
     ps_mask_file: Filename,
     amp_dispersion_file: Filename,
-) -> tuple[Path, Path]:
+    scr_file: Optional[Filename] = None,
+) -> tuple[Path, Path, Optional[Path]]:
     """Create a multilooked version of the full-res PS mask/amplitude dispersion.
 
     Parameters
@@ -284,6 +328,9 @@ def multilook_ps_files(
         Name of input full-res uint8 PS mask file
     amp_dispersion_file : Filename
         Name of input full-res float32 amplitude dispersion file
+    scr_file : Optional[Filename]
+        Name of input full-res float32 SCR file. If provided, a multilooked
+        version will be created.
 
     Returns
     -------
@@ -293,11 +340,14 @@ def multilook_ps_files(
     output_amp_disp_file : Path
         Multilooked amplitude dispersion file
         Similar naming scheme to `output_ps_file`
+    output_scr_file : Optional[Path]
+        Multilooked SCR file, or None if `scr_file` was not provided.
 
     """
     if strides == {"x": 1, "y": 1}:
         logger.info("No striding request, skipping multilook.")
-        return Path(ps_mask_file), Path(amp_dispersion_file)
+        scr_path = Path(scr_file) if scr_file is not None else None
+        return Path(ps_mask_file), Path(amp_dispersion_file), scr_path
     full_cols, full_rows = io.get_raster_xysize(ps_mask_file)
     out_rows, out_cols = full_rows // strides["y"], full_cols // strides["x"]
 
@@ -349,7 +399,37 @@ def multilook_ps_files(
             strides=strides,
             nodata=NODATA_VALUES["amp_dispersion"],
         )
-    return ps_out_path, amp_disp_out_path
+
+    # Optionally multilook the SCR file
+    scr_out_path: Optional[Path] = None
+    if scr_file is not None:
+        from dolphin.ps._scr import SCR_NODATA
+
+        scr_suffix = Path(scr_file).suffix
+        scr_out_path = Path(str(scr_file).replace(scr_suffix, f"_looked{scr_suffix}"))
+        if scr_out_path.exists():
+            logger.info(f"{scr_out_path} exists, skipping.")
+        else:
+            scr = io.load_gdal(scr_file, masked=True)
+            # Use nanmax: the strongest scatterer (highest SCR) in the window
+            scr_looked = utils.take_looks(
+                scr,
+                strides["y"],
+                strides["x"],
+                func_type="nanmax",
+                edge_strategy="pad",
+            )
+            scr_looked = scr_looked[:out_rows, :out_cols]
+            scr_looked = scr_looked.filled(SCR_NODATA)
+            io.write_arr(
+                arr=scr_looked,
+                like_filename=scr_file,
+                output_name=scr_out_path,
+                strides=strides,
+                nodata=SCR_NODATA,
+            )
+
+    return ps_out_path, amp_disp_out_path, scr_out_path
 
 
 def combine_means(means: ArrayLike, N: ArrayLike) -> np.ndarray:

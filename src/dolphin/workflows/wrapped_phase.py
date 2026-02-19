@@ -157,6 +157,7 @@ def run(
         except IndexError:
             existing_amp = existing_disp = None
 
+        scr_opts = cfg.ps_options.scr
         kwargs = tqdm_kwargs | {"desc": f"PS ({ps_output.parent})"}
         ps.create_ps(
             reader=vrt_stack,
@@ -169,15 +170,24 @@ def run(
             nodata_mask=nodata_mask,
             existing_amp_mean_file=existing_amp,
             block_shape=cfg.worker_settings.block_shape,
+            method=cfg.ps_options.method.value,
+            output_scr_file=scr_opts._output_file,
+            scr_threshold=scr_opts.scr_threshold,
+            scr_window_size=scr_opts.window_size,
+            scr_model=scr_opts.model,
+            scr_reference_idx=scr_opts.reference_idx,
             **kwargs,
         )
 
     # Save a looked version of the PS mask too
     strides_dict = cfg.output_options.strides.model_dump()
-    ps_looked_file, amp_disp_looked_file = ps.multilook_ps_files(
+    scr_opts = cfg.ps_options.scr
+    scr_file = scr_opts._output_file if scr_opts._output_file.exists() else None
+    ps_looked_file, amp_disp_looked_file, _ = ps.multilook_ps_files(
         strides=strides_dict,
         ps_mask_file=cfg.ps_options._output_file,
         amp_dispersion_file=cfg.ps_options._amp_dispersion_file,
+        scr_file=scr_file,
     )
 
     # #########################

@@ -251,6 +251,11 @@ class DisplacementWorkflow(WorkflowBase):
             work_dir / self.timeseries_options._velocity_file
         )
 
+        # Auto-fill spurt link model wavelength from input_options if not set
+        lms = self.unwrap_options.spurt_options.link_model_settings
+        if lms.wavelength_m is None and self.input_options.wavelength is not None:
+            lms.wavelength_m = self.input_options.wavelength
+
         # Modify interferogram options if using spurt for 3d unwrapping,
         # which only does nearest-3 interferograms
         if self.unwrap_options.unwrap_method == UnwrapMethod.SPURT:

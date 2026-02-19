@@ -18,6 +18,7 @@ logger = logging.getLogger("dolphin")
 __all__ = [
     "PreprocessOptions",
     "SnaphuOptions",
+    "SpurtLinkModelSettings",
     "SpurtOptions",
     "TophuOptions",
     "UnwrapOptions",
@@ -251,6 +252,57 @@ class SpurtMergerSettings(BaseModel):
     )
 
 
+class SpurtLinkModelSettings(BaseModel, extra="forbid"):
+    """Settings for per-link velocity and DEM error estimation in spurt.
+
+    When `baseline_csv` is provided, spurt estimates velocity and DEM error
+    per spatial link during temporal unwrapping. The model guides phase
+    disambiguation and produces per-point parameter rasters.
+    """
+
+    baseline_csv: Path | None = Field(
+        default=None,
+        description=(
+            "Path to CSV with perpendicular baselines (columns: date, bperp_m)."
+            " Enables velocity/DEM error estimation when provided."
+        ),
+    )
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable velocity/DEM error estimation. Only takes effect when"
+            " baseline_csv is also provided."
+        ),
+    )
+    wavelength_m: float | None = Field(
+        default=None,
+        description=(
+            "Radar wavelength in meters. If None, auto-populated from"
+            " input_options.wavelength during workflow configuration."
+        ),
+        gt=0,
+    )
+    slant_range_m: float = Field(
+        default=900000.0,
+        description="Slant range distance in meters.",
+        gt=0,
+    )
+    look_angle_deg: float = Field(
+        default=39.0,
+        description="Look angle in degrees.",
+        gt=0,
+        lt=90,
+    )
+    velocity_range: tuple[float, float, float] = Field(
+        default=(-100.0, 100.0, 5.0),
+        description="Velocity grid search range in mm/yr: (min, max, step).",
+    )
+    dem_error_range: tuple[float, float, float] = Field(
+        default=(-50.0, 50.0, 2.5),
+        description="DEM error grid search range in meters: (min, max, step).",
+    )
+
+
 class SpurtOptions(BaseModel, extra="forbid"):
     """Options for running 3D unwrapping on a set of interferograms.
 
@@ -287,6 +339,9 @@ class SpurtOptions(BaseModel, extra="forbid"):
     tiler_settings: SpurtTilerSettings = Field(default_factory=SpurtTilerSettings)
     solver_settings: SpurtSolverSettings = Field(default_factory=SpurtSolverSettings)
     merger_settings: SpurtMergerSettings = Field(default_factory=SpurtMergerSettings)
+    link_model_settings: SpurtLinkModelSettings = Field(
+        default_factory=SpurtLinkModelSettings
+    )
 
 
 class UnwrapOptions(BaseModel, extra="forbid"):

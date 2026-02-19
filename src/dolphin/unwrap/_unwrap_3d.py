@@ -126,6 +126,38 @@ def unwrap_spurt(
         ]
     )
 
+    # Link Model Settings (DEM error / velocity estimation)
+    lms = options.link_model_settings
+    if lms.baseline_csv is not None:
+        if lms.enabled:
+            assert lms.wavelength_m is not None, (
+                "wavelength_m must be set in link_model_settings (or in"
+                " input_options.wavelength) when baseline_csv is provided"
+            )
+            cmd.extend(["--baseline-csv", str(lms.baseline_csv)])
+            cmd.extend(["--wavelength", str(lms.wavelength_m)])
+            cmd.extend(["--slant-range", str(lms.slant_range_m)])
+            cmd.extend(["--look-angle-deg", str(lms.look_angle_deg)])
+            cmd.extend(
+                [
+                    "--velocity-range",
+                    str(lms.velocity_range[0]),
+                    str(lms.velocity_range[1]),
+                    str(lms.velocity_range[2]),
+                ]
+            )
+            cmd.extend(
+                [
+                    "--dem-error-range",
+                    str(lms.dem_error_range[0]),
+                    str(lms.dem_error_range[1]),
+                    str(lms.dem_error_range[2]),
+                ]
+            )
+        else:
+            cmd.extend(["--baseline-csv", str(lms.baseline_csv)])
+            cmd.append("--no-velocity-estimation")
+
     def run_with_retry(cmd: list[str], num_retries: int = 3) -> int:
         for attempt in range(num_retries):
             process = Popen(cmd, stdout=PIPE, stderr=STDOUT, text=True)

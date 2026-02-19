@@ -156,8 +156,13 @@ def _estimate_scr(phase_residues, model):
 
     if model == "coherence":
         # Temporal coherence magnitude → SCR via gamma = SCR / (1 + SCR)
+        n_ifg = phi.shape[0]
         phasors = jnp.exp(1j * phi)
         coherence = jnp.abs(jnp.mean(phasors, axis=0))
+        # Subtract the expected noise floor for N independent phasors:
+        # E[|mean(exp(i*noise))|] ≈ sqrt(pi / (4N)) for circular uniform noise
+        noise_floor = jnp.sqrt(jnp.pi / (4 * n_ifg))
+        coherence = jnp.maximum(coherence - noise_floor, 0.0)
         scr = coherence / jnp.maximum(1 - coherence, 1e-6)
         # Clip to same max as MLE grid (rho=0.99 -> SCR=99)
         scr = jnp.minimum(scr, 99.0)

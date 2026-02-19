@@ -54,7 +54,7 @@ _N_PHASE_BINS = 100
 
 
 def _boxcar_filter_2d(arr, window_size):
-    """2D uniform (boxcar) filter via ``lax.reduce_window``."""
+    """2D uniform (boxcar) filter via `lax.reduce_window`."""
     half = window_size // 2
     padding = [(half, half), (half, half)]
     dims = (window_size, window_size)
@@ -146,19 +146,21 @@ def _int_phase_pdf_constant(gamma, phi, n_integration):
 def _estimate_scr(phase_residues, model):
     """Estimate SCR per pixel from phase residues.
 
-    For ``model="coherence"``, uses the method-of-moments estimator
-    (temporal coherence magnitude mapped to SCR). For ``"gaussian"``
-    or ``"constant"``, performs a maximum-likelihood grid search over
+    For `model="coherence"`, uses the method-of-moments estimator
+    (temporal coherence magnitude mapped to SCR). For `"gaussian"`
+    or `"constant"`, performs a maximum-likelihood grid search over
     candidate SCR values.
     """
     nrow, ncol = phase_residues.shape[1], phase_residues.shape[2]
     phi = phase_residues.reshape(phase_residues.shape[0], -1)
 
     if model == "coherence":
-        # Method-of-moments: temporal coherence → SCR
+        # Temporal coherence magnitude → SCR via gamma = SCR / (1 + SCR)
         phasors = jnp.exp(1j * phi)
         coherence = jnp.abs(jnp.mean(phasors, axis=0))
         scr = coherence / jnp.maximum(1 - coherence, 1e-6)
+        # Clip to same max as MLE grid (rho=0.99 -> SCR=99)
+        scr = jnp.minimum(scr, 99.0)
         return scr.reshape(nrow, ncol)
 
     # MLE grid search
@@ -371,7 +373,7 @@ def create_ps_scr(
     min_count : int or None, optional
         Minimum number of valid (non-zero) SLCs required per pixel. Pixels
         with fewer valid acquisitions have their SCR set to nodata.
-        Default is ``int(0.9 * n_slc)``.
+        Default is `int(0.9 * n_slc)`.
     nodata_mask : Optional[np.ndarray]
         If provided, skips computing over areas where the mask is False.
     block_shape : tuple[int, int], optional

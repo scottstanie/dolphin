@@ -135,14 +135,14 @@ def unwrap_spurt(
 
             return_code = process.wait()
             if return_code != 0:
-                logging.warning(f"spurt attempt {attempt + 1} failed")
+                logger.warning(f"spurt attempt {attempt + 1} failed")
                 continue
 
-            logging.info(f"Command succeeded on attempt {attempt + 1}")
+            logger.info(f"Command succeeded on attempt {attempt + 1}")
             return return_code
 
         # If we've exhausted all retries
-        logging.error(f"Command failed after {num_retries} attempts")
+        logger.error(f"Command failed after {num_retries} attempts")
         raise RuntimeError(f"Command '{cmd}' failed after {num_retries} attempts")
 
     run_with_retry(cmd, num_retries=num_retries)

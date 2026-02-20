@@ -37,7 +37,8 @@
             "level": "INFO",
             "handlers": [
                 "stderr"
-            ]
+            ],
+            "propagate": false
         }
     }
 }

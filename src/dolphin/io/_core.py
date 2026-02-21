@@ -73,7 +73,6 @@ DEFAULT_TIFF_OPTIONS_RIO = {
 EXTRA_COMPRESSED_TIFF_OPTIONS_RIO = DEFAULT_TIFF_OPTIONS_RIO | {
     "blockxsize": 512,
     "blockysize": 512,
-    "nbits": 16,
     "predictor": 2,
 }
 # For gdal's bindings

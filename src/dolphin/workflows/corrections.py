@@ -187,7 +187,7 @@ def prepare_geometry(
             cur_files = [format_nc_filename(f, ds_name=ds_path) for f in geo_files]
 
             if ds_name not in "layover_shadow_mask":
-                options = (*DEFAULT_TIFF_OPTIONS, "NBITS=16")
+                options = (*DEFAULT_TIFF_OPTIONS, "PREDICTOR=2")
             else:
                 options = DEFAULT_TIFF_OPTIONS
             stitching.merge_images(

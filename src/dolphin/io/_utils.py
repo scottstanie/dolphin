@@ -54,7 +54,6 @@ def get_gtiff_options(
     chunk_size: int = 256,
     predictor: int | None = None,
     zlevel: int | None = 1,
-    use_16_bits: bool = False,
 ) -> dict[str, str]:
     """Generate GTiff creation options for GDAL translate.
 
@@ -71,15 +70,11 @@ def get_gtiff_options(
     zlevel : int or None, optional
         Compression level for the 'deflate' and 'zstd' compression types (default is 1).
         Use None to omit the zlevel.
-    use_16_bits: bool
-        If True, sets `NBITS=16` to write float32 rasters at half precision.
-        Default is False.
 
     Returns
     -------
-    dict[str, str] | list[str]
-        List of GTiff creation options formatted for GDAL (if `gdal_format=True`)
-        Otherwise, a dict mapping option to value for rasterio.
+    dict[str, str]
+        Dict mapping option to value for rasterio.
 
     """
     options = {
@@ -95,8 +90,6 @@ def get_gtiff_options(
         options["predictor"] = str(predictor)
     if compression_type.lower().startswith("lerc") and max_error is not None:
         options["max_z_error"] = str(max_error)
-    if use_16_bits:
-        options["nbits"] = "16"
 
     return options
 

@@ -128,7 +128,9 @@ def unwrap_spurt(
 
     # Link Model Settings (DEM error / velocity estimation)
     lms = options.link_model_settings
-    if lms.baseline_csv is not None:
+    if lms.baseline_csv is None:
+        logger.info("No baseline CSV provided, skipping velocity/DEM error estimation")
+    else:
         if lms.enabled:
             assert lms.wavelength_m is not None, (
                 "wavelength_m must be set in link_model_settings (or in"
@@ -159,6 +161,7 @@ def unwrap_spurt(
             cmd.append("--no-velocity-estimation")
 
     def run_with_retry(cmd: list[str], num_retries: int = 3) -> int:
+        logger.info(f"Running spurt with command:\n{' '.join(cmd)}")
         for attempt in range(num_retries):
             process = Popen(cmd, stdout=PIPE, stderr=STDOUT, text=True)
             assert process.stdout is not None

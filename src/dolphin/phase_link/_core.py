@@ -234,6 +234,7 @@ def run_phase_linking(
     # Set as unit-magnitude
     cpx_phase = np.exp(1j * np.angle(cpl_out.cpx_phase))
     # Fill in the PS pixels from the original SLC stack, if it was given
+    crlb_std_dev = np.array(cpl_out.crlb_std_dev)
     if np.any(ps_mask):
         fill_ps_pixels(
             cpx_phase,
@@ -244,6 +245,7 @@ def run_phase_linking(
             avg_mag,
             reference_idx,
             use_max_ps=use_max_ps,
+            crlb_std_dev=crlb_std_dev if compute_crlb else None,
         )
 
     if use_slc_amp:
@@ -264,7 +266,7 @@ def run_phase_linking(
         # Convert the rest to numpy for writing
         eigenvalues=np.asarray(cpl_out.eigenvalues),
         estimator=np.asarray(cpl_out.estimator),
-        crlb_std_dev=np.array(cpl_out.crlb_std_dev),
+        crlb_std_dev=crlb_std_dev,
         closure_phases=np.asarray(cpl_out.closure_phases),
         multilooked_coherence=np.asarray(cpl_out.multilooked_coherence),
     )

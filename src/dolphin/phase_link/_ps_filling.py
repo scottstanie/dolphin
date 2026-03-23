@@ -22,10 +22,11 @@ def fill_ps_pixels(
     avg_mag: ArrayLike | None,
     reference_idx: int = 0,
     use_max_ps: bool = True,
+    crlb_std_dev: ArrayLike | None = None,
 ):
     """Fill in the PS locations in the MLE estimate with the original SLC data.
 
-    Overwrites `cpx_phase` and `temp_coh` in place.
+    Overwrites `cpx_phase`, `temp_coh`, and optionally `crlb_std_dev` in place.
 
     Parameters
     ----------
@@ -48,6 +49,9 @@ def fill_ps_pixels(
     use_max_ps : bool, optional, default = True
         If True, use the brightest PS pixel in each look window to fill in the
         MLE estimate. If False, use the average of all PS pixels in each look window.
+    crlb_std_dev : ndarray, shape = (nslc, rows, cols), optional
+        The CRLB standard deviation array. If provided, PS pixel locations are
+        filled with the amplitude dispersion as a proxy for phase std deviation.
 
     """
     if avg_mag is None:
@@ -94,6 +98,24 @@ def fill_ps_pixels(
 
     # Force PS pixels to have high temporal coherence
     temp_coh[ps_mask_looked] = 1
+
+    if crlb_std_dev is not None:
+        # Use amplitude dispersion as a proxy for the phase standard deviation
+        # at PS locations. For high-SNR scatterers, sigma_phi ~ D_A.
+        amp_mag = np.abs(slc_stack)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            amp_disp = np.nanstd(amp_mag, axis=0) / np.nanmean(amp_mag, axis=0)
+        # Only look within PS pixels (null out non-PS before taking looks)
+        amp_disp[~ps_mask] = np.nan
+        amp_disp_looked = take_looks(
+            amp_disp, *strides, func_type="nanmin", edge_strategy="pad"
+        )
+        amp_disp_looked = amp_disp_looked[
+            : crlb_std_dev.shape[1], : crlb_std_dev.shape[2]
+        ]
+        # Fill all SLC bands with the same per-pixel amp dispersion value
+        crlb_std_dev[:, ps_mask_looked] = amp_disp_looked[ps_mask_looked]
 
 
 def _get_avg_ps(

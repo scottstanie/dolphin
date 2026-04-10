@@ -254,6 +254,16 @@ def format_nc_filename(filename: Filename, ds_name: Optional[str] = None) -> str
     If `filename` is already formatted, or if `filename` is not an HDF5/NetCDF
     file (based on the file extension), it is returned unchanged.
 
+    The driver prefix is chosen by file extension:
+
+    - ``.nc``  → ``NETCDF:"file":"//ds"`` (CF-compliant netCDF)
+    - ``.h5``  → ``HDF5:"file":"//ds"`` (raw HDF5)
+
+    For files with no CF metadata (e.g. NISAR GSLCs), GDAL's NETCDF driver
+    refuses to open the subdataset and reports "No such file or directory".
+    The HDF5 driver works on both raw HDF5 and CF-compliant HDF5, so
+    splitting on extension is the safe heuristic.
+
     Parameters
     ----------
     filename : str or PathLike
@@ -285,7 +295,8 @@ def format_nc_filename(filename: Filename, ds_name: Optional[str] = None) -> str
         msg = "Must provide dataset name for HDF5/NetCDF files"
         raise ValueError(msg)
 
-    return f'NETCDF:"{filename}":"//{ds_name.lstrip("/")}"'
+    driver = "HDF5" if fname_clean.endswith(".h5") else "NETCDF"
+    return f'{driver}:"{filename}":"//{ds_name.lstrip("/")}"'
 
 
 def copy_projection(src_file: Filename, dst_file: Filename) -> None:

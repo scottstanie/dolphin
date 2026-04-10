@@ -171,21 +171,25 @@ def _add_comments(
                 subsequent_indent=" " * indent_per_level,
             )
         )
-        if "anyOf" in val:
+        if "anyOf" in val or "oneOf" in val:
             #   'anyOf': [{'type': 'string'}, {'type': 'null'}],
-            # or for a Union of submodels:
+            # or for a Union of submodels (plain or discriminated):
             #   'anyOf': [{'$ref': '#/$defs/A'}, {'$ref': '#/$defs/B'}]
-            # Join the options with a pipe, like Python types; fall back to
-            # the sub-model name for `$ref` entries that have no primitive
+            #   'oneOf': [{'$ref': '#/$defs/A'}, {'$ref': '#/$defs/B'}]
+            # `oneOf` shows up when the field uses
+            # `Annotated[Union[...], Field(discriminator=...)]`. Join the
+            # options with a pipe, like Python types; fall back to the
+            # sub-model name for `$ref` entries that have no primitive
             # `type` key.
-            def _anyof_label(d: dict) -> str:
+            def _union_label(d: dict) -> str:
                 if "type" in d:
                     return d["type"]
                 if "$ref" in d:
                     return d["$ref"].rsplit("/", 1)[-1]
                 return "object"
 
-            type_str = " | ".join(_anyof_label(d) for d in val["anyOf"])
+            entries = val.get("anyOf") or val.get("oneOf") or []
+            type_str = " | ".join(_union_label(d) for d in entries)
             type_str.replace("null", "None")
         elif "const" in val:
             type_str = val["const"]

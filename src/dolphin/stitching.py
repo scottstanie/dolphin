@@ -353,14 +353,18 @@ def get_downsampled_vrts(
     warped_files = []
     res = _get_resolution(filenames)
     for idx, fn in enumerate(filenames):
-        p = Path(fn)
-        warped_fn = Path(dirname) / _get_temp_filename(p, idx, "_downsampled")
-        logger.debug(f"Downsampling {p} by {strides}")
+        # Preserve the original GDAL connection string verbatim. Wrapping a
+        # subdataset reference like `HDF5:"file.h5":"//ds"` in `Path()`
+        # normalizes the `//` inside the dataset name to `/`, which breaks
+        # the GDAL subdataset lookup ("No such file or directory").
+        fn_str = fspath(fn)
+        warped_fn = Path(dirname) / _get_temp_filename(fn_str, idx, "_downsampled")
+        logger.debug(f"Downsampling {fn_str} by {strides}")
         warped_files.append(warped_fn)
-        left, bottom, right, top = io.get_raster_bounds(p)
+        left, bottom, right, top = io.get_raster_bounds(fn_str)
         gdal.Translate(
             fspath(warped_fn),
-            fspath(p),
+            fn_str,
             format="VRT",  # Just creates a file that will warp on the fly
             resampleAlg="nearest",  # nearest neighbor for resampling
             xRes=res[0] * strides["x"],
@@ -371,7 +375,7 @@ def get_downsampled_vrts(
     return warped_files
 
 
-def _get_temp_filename(fn: Path, idx: int, extra: str = ""):
+def _get_temp_filename(fn: Filename, idx: int, extra: str = ""):
     base = utils._get_path_from_gdal_str(fn).stem
     return f"{base}_{idx}{extra}.vrt"
 

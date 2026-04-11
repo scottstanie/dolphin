@@ -189,40 +189,27 @@ class DisplacementWorkflow(WorkflowBase):
         super().model_post_init(context)
 
         if self.input_options.wavelength is None and self.cslc_file_list:
-            # Try to infer the wavelength from filenames
-            if "CAPELLA" in self.cslc_file_list[-1].name.upper():
+            # Infer the wavelength from the last file's name. Cheap string
+            # checks beat opening the file, and they work for any wrapper
+            # (raw HDF5, VRT, GeoTIFF copy) that preserves the sensor prefix.
+            last_name = self.cslc_file_list[-1].name.upper()
+            if "CAPELLA" in last_name:
                 self.input_options.wavelength = constants.CAPELLA_WAVELENGTH
-            elif "NISAR" in self.cslc_file_list[-1].name.upper():
-                # NISAR GSLC HDF5s carry mission + radar band under
-                # /science/LSAR/identification. Peek and set the matching
-                # constant so InSAR outputs land in meters instead of
-                # radians. Skips silently if the first file isn't an
-                # openable HDF5 (e.g. a VRT wrapping the HDF5) — in that
-                # case the caller should set `wavelength` explicitly.
-                import h5py
-
-                try:
-                    with h5py.File(self.cslc_file_list[-1], "r") as hf:
-                        ident = hf.get("/science/LSAR/identification")
-                        if ident is not None:
-                            band_ds = ident.get("radarBand")
-                            if band_ds is not None:
-                                band = band_ds[()]
-                                if isinstance(band, (bytes, bytearray)):
-                                    band = band.decode()
-                                band = band.upper()
-                                if band == "L":
-                                    self.input_options.wavelength = (
-                                        constants.NISAR_L_WAVELENGTH
-                                    )
-                                elif band == "S":
-                                    self.input_options.wavelength = (
-                                        constants.NISAR_S_WAVELENGTH
-                                    )
-                except OSError:
-                    # Not an HDF5 file (e.g. a VRT) — let the caller set
-                    # `wavelength` explicitly.
-                    pass
+            elif last_name.startswith("NISAR_L"):
+                # NISAR filename spec (NISAR D-102269 §3.4): the first slot
+                # after `NISAR_` is instrument + level, e.g. `L2` = L-SAR
+                # Level 2, `S2` = S-SAR Level 2. Product files don't
+                # currently store an explicit center frequency anywhere, so
+                # map instrument -> single wavelength constant. NOTE: L-band
+                # frequencyA and frequencyB centers differ by ~1% (~2 mm
+                # wavelength); sweets always downloads a single-frequency
+                # stack so it's never mixing them, and the constant matches
+                # frequencyA which is what every current product ships.
+                # Revisit if freqB-only products appear or if mm-accurate
+                # displacement becomes important.
+                self.input_options.wavelength = constants.NISAR_L_WAVELENGTH
+            elif last_name.startswith("NISAR_S"):
+                self.input_options.wavelength = constants.NISAR_S_WAVELENGTH
             else:
                 # Try/catch the OPERA-S1 burst naming convention
                 try:

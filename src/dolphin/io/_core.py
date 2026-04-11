@@ -254,15 +254,22 @@ def format_nc_filename(filename: Filename, ds_name: Optional[str] = None) -> str
     If `filename` is already formatted, or if `filename` is not an HDF5/NetCDF
     file (based on the file extension), it is returned unchanged.
 
-    The driver prefix is chosen by file extension:
+    The driver prefix is chosen by filename:
 
-    - ``.nc``  → ``NETCDF:"file":"//ds"`` (CF-compliant netCDF)
-    - ``.h5``  → ``HDF5:"file":"//ds"`` (raw HDF5)
+    - ``.nc``  → ``NETCDF:"file":"//ds"``
+    - ``.h5`` whose granule prefix is ``NISAR_`` → ``HDF5:"file":"//ds"``
+      (NISAR raw HDF5; no CF metadata, and GDAL's NETCDF driver refuses
+      it with "No such file or directory")
+    - every other ``.h5`` → ``NETCDF:"file":"//ds"``
+      (OPERA CSLCs, COMPASS CSLCs + static_layers, etc. all ship
+      CF-1.8-compliant HDF5 and depend on the NETCDF driver to read the
+      grid mapping; the bare HDF5 driver opens the data but reports an
+      identity geotransform)
 
-    For files with no CF metadata (e.g. NISAR GSLCs), GDAL's NETCDF driver
-    refuses to open the subdataset and reports "No such file or directory".
-    The HDF5 driver works on both raw HDF5 and CF-compliant HDF5, so
-    splitting on extension is the safe heuristic.
+    This heuristic is a workaround for the fact that dolphin doesn't
+    want to open the file just to choose a driver prefix. NISAR is the
+    only non-CF raw-HDF5 source we care about today; extend the
+    allowlist if that changes.
 
     Parameters
     ----------
@@ -295,7 +302,11 @@ def format_nc_filename(filename: Filename, ds_name: Optional[str] = None) -> str
         msg = "Must provide dataset name for HDF5/NetCDF files"
         raise ValueError(msg)
 
-    driver = "HDF5" if fname_clean.endswith(".h5") else "NETCDF"
+    basename = Path(fname_clean).name.upper()
+    if fname_clean.endswith(".h5") and basename.startswith("NISAR_"):
+        driver = "HDF5"
+    else:
+        driver = "NETCDF"
     return f'{driver}:"{filename}":"//{ds_name.lstrip("/")}"'
 
 

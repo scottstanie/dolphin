@@ -14,6 +14,14 @@ NISAR_S_WAVELENGTH = SPEED_OF_LIGHT / NISAR_S_FREQUENCY  # meters
 # (freqA_center_Hz, freqB_center_Hz); `None` means the mode has no freqB.
 # Full 77 MHz mode is intentionally omitted: its freqA center equals
 # NISAR_L_FREQUENCY above, so the generic constant fallback already covers it.
+#
+# NOTE: these values come from Figure 3-1 of the spec document and are known
+# to disagree with some real BETA PR products by up to ~10 MHz (~0.8% wave-
+# length). The authoritative value for a given product is the scalar dataset
+# at `/science/LSAR/GSLC/grids/frequency{A,B}/centerFrequency` inside the
+# HDF5 itself — callers should prefer reading that when present and only
+# fall back to this table when the dataset is missing (e.g. older subset
+# files that stripped the metadata).
 NISAR_L_MODE_CENTERS_HZ: dict[str, tuple[int, int | None]] = {
     "4005": (1_229_000_000, 1_293_500_000),  # 40+5 MHz split
     "2005": (1_229_000_000, 1_293_500_000),  # 20+5 MHz split

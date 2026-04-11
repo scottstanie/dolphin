@@ -192,6 +192,37 @@ class DisplacementWorkflow(WorkflowBase):
             # Try to infer the wavelength from filenames
             if "CAPELLA" in self.cslc_file_list[-1].name.upper():
                 self.input_options.wavelength = constants.CAPELLA_WAVELENGTH
+            elif "NISAR" in self.cslc_file_list[-1].name.upper():
+                # NISAR GSLC HDF5s carry mission + radar band under
+                # /science/LSAR/identification. Peek and set the matching
+                # constant so InSAR outputs land in meters instead of
+                # radians. Skips silently if the first file isn't an
+                # openable HDF5 (e.g. a VRT wrapping the HDF5) — in that
+                # case the caller should set `wavelength` explicitly.
+                import h5py
+
+                try:
+                    with h5py.File(self.cslc_file_list[-1], "r") as hf:
+                        ident = hf.get("/science/LSAR/identification")
+                        if ident is not None:
+                            band_ds = ident.get("radarBand")
+                            if band_ds is not None:
+                                band = band_ds[()]
+                                if isinstance(band, (bytes, bytearray)):
+                                    band = band.decode()
+                                band = band.upper()
+                                if band == "L":
+                                    self.input_options.wavelength = (
+                                        constants.NISAR_L_WAVELENGTH
+                                    )
+                                elif band == "S":
+                                    self.input_options.wavelength = (
+                                        constants.NISAR_S_WAVELENGTH
+                                    )
+                except OSError:
+                    # Not an HDF5 file (e.g. a VRT) — let the caller set
+                    # `wavelength` explicitly.
+                    pass
             else:
                 # Try/catch the OPERA-S1 burst naming convention
                 try:

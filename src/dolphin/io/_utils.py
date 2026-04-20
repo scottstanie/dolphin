@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -157,9 +158,12 @@ def repack_raster(
         profile = src.profile
         profile.update(**options)
         # Work in blocks on the input raster
-        blocks = iter_blocks(
-            arr_shape=(src.height, src.width),
-            block_shape=block_shape,
+        blocks = list(
+            # Convert to list to avoid issues with generators for multi-band rasters
+            iter_blocks(
+                arr_shape=(src.height, src.width),
+                block_shape=block_shape,
+            )
         )
 
         with rio.open(output_path, "w", **profile) as dst:
@@ -181,10 +185,25 @@ def repack_raster(
     return output_path
 
 
+def _repack_raster_partial(
+    output_dir: Path | None,
+    keep_bits: int | None,
+    block_shape: int | tuple[int, int],
+    **output_options,
+):
+    return partial(
+        repack_raster,
+        output_dir=output_dir,
+        keep_bits=keep_bits,
+        block_shape=block_shape,
+        **output_options,
+    )
+
+
 def repack_rasters(
     raster_files: list[Path],
     output_dir: Path | None = None,
-    num_threads: int = 4,
+    num_workers: int = 4,
     keep_bits: int | None = None,
     block_shape: int | tuple[int, int] = (1024, 1024),
     **output_options,
@@ -200,8 +219,8 @@ def repack_rasters(
         List of paths to the input raster files.
     output_dir : Path, optional
         Directory to save the processed rasters or None for in-place processing.
-    num_threads : int, optional
-        Number of threads to use (default is 4).
+    num_workers : int, optional
+        Number of worker processes to use (default is 4).
     keep_bits : int, optional
         Number of bits to preserve in mantissa. Defaults to None.
         Lower numbers will truncate the mantissa more and enable more compression.
@@ -217,19 +236,22 @@ def repack_rasters(
         If `output_dir` is None, this will be the same as `raster_paths`
 
     """
-    from tqdm.contrib.concurrent import thread_map
+    import multiprocessing as mp
 
-    thread_map(
-        lambda raster: repack_raster(
-            raster,
-            output_dir,
+    from tqdm.contrib.concurrent import process_map
+
+    mp_context = mp.get_context("forkserver")
+    process_map(
+        _repack_raster_partial(
+            output_dir=output_dir,
             keep_bits=keep_bits,
             block_shape=block_shape,
             **output_options,
         ),
         raster_files,
-        max_workers=num_threads,
+        max_workers=num_workers,
         desc="Processing Rasters",
+        mp_context=mp_context,
     )
 
 

@@ -58,7 +58,14 @@ def run_wrapped_phase_sequential(
     max_workers: int = 1,
     **tqdm_kwargs,
 ) -> tuple[
-    list[Path], list[Path], list[Path], list[Path], list[Path], list[Path], list[Path]
+    list[Path],
+    list[Path],
+    list[Path],
+    list[Path],
+    list[Path],
+    list[Path],
+    list[Path],
+    list[Path],
 ]:
     """Estimate wrapped phase using batches of ministacks."""
     if strides is None:
@@ -95,6 +102,7 @@ def run_wrapped_phase_sequential(
     crlb_files: list[Path] = []
     closure_phase_files: list[Path] = []
     temp_coh_files: list[Path] = []
+    closure_phase_coh_files: list[Path] = []
     similarity_files: list[Path] = []
     shp_count_files: list[Path] = []
 
@@ -152,6 +160,7 @@ def run_wrapped_phase_sequential(
             cur_closure_phase_files,
             _cur_comp_slc_file,
             temp_coh_file,
+            closure_phase_coh_file,
             similarity_file,
             shp_count_file,
         ) = _get_outputs_from_folder(cur_output_folder)
@@ -159,6 +168,7 @@ def run_wrapped_phase_sequential(
         closure_phase_files.extend(cur_closure_phase_files)
         output_slc_files.extend(cur_output_files)
         temp_coh_files.append(temp_coh_file)
+        closure_phase_coh_files.append(closure_phase_coh_file)
         similarity_files.append(similarity_file)
         shp_count_files.append(shp_count_file)
 
@@ -171,12 +181,16 @@ def run_wrapped_phase_sequential(
         return tmp
 
     temp_coh_files = move_to_output(temp_coh_files, output_folder)
+    closure_phase_coh_files = move_to_output(closure_phase_coh_files, output_folder)
     shp_count_files = move_to_output(shp_count_files, output_folder)
     similarity_files = move_to_output(similarity_files, output_folder)
 
     # Average the temporal coherence files in each ministack
     full_span = ministack_planner.real_slc_date_range_str
     avg_temp_coh_file = output_folder / f"temporal_coherence_average_{full_span}.tif"
+    avg_closure_phase_coh_file = (
+        output_folder / f"closure_phase_coh_average_{full_span}.tif"
+    )
     avg_shp_count_file = output_folder / f"shp_counts_average_{full_span}.tif"
 
     # we can pass the list of files to gdal_calc, which interprets it
@@ -184,8 +198,12 @@ def run_wrapped_phase_sequential(
 
     if len(temp_coh_files) > 1:
         _average_or_rename(temp_coh_files, avg_temp_coh_file, "Float32")
+        _average_or_rename(
+            closure_phase_coh_files, avg_closure_phase_coh_file, "Float32"
+        )
         _average_or_rename(shp_count_files, avg_shp_count_file, "Int16")
         temp_coh_files.append(avg_temp_coh_file)
+        closure_phase_coh_files.append(avg_closure_phase_coh_file)
         shp_count_files.append(avg_shp_count_file)
 
     if len(similarity_files) > 1:
@@ -222,6 +240,7 @@ def run_wrapped_phase_sequential(
         closure_phase_files,
         comp_slc_outputs,
         temp_coh_files,
+        closure_phase_coh_files,
         shp_count_files,
         similarity_files,
     )
@@ -229,11 +248,12 @@ def run_wrapped_phase_sequential(
 
 def _get_outputs_from_folder(
     output_folder: Path,
-) -> tuple[list[Path], list[Path], list[Path], Path, Path, Path, Path]:
+) -> tuple[list[Path], list[Path], list[Path], Path, Path, Path, Path, Path]:
     cur_output_files = sorted(output_folder.glob("2*.slc.tif"))
 
     cur_comp_slc_file = next(output_folder.glob("compressed_*"))
     temp_coh_file = next(output_folder.glob("temporal_coherence_*"))
+    closure_phase_coh_file = next(output_folder.glob("closure_phase_coh_*"))
     similarity_file = next(output_folder.glob("similarity*"))
     shp_count_file = next(output_folder.glob("shp_counts_*"))
     crlb_files = sorted(output_folder.glob("crlb/crlb*tif"))
@@ -245,6 +265,7 @@ def _get_outputs_from_folder(
         closure_phase_files,
         cur_comp_slc_file,
         temp_coh_file,
+        closure_phase_coh_file,
         similarity_file,
         shp_count_file,
     )

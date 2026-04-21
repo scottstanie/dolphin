@@ -41,6 +41,9 @@ class WrappedPhaseOutput(NamedTuple):
         In the case of a single phase linking step, this is from one phase linking step.
         In the case of sequential phase linking, this from each ministack, and one
         average of all ministacks.
+    closure_phase_coh_files : list[Path]
+        Paths to weighted closure-phase coefficient (gamma_CPw) files created.
+        One per ministack, plus one average across ministacks for sequential runs.
     ps_looked_file : Path
         The multilooked boolean persistent scatterer file.
     amp_disp_looked_file : Path
@@ -64,6 +67,7 @@ class WrappedPhaseOutput(NamedTuple):
     multilooked_coherence_files: list[Path]
     comp_slc_file_list: list[Path]
     temp_coh_files: list[Path]
+    closure_phase_coh_files: list[Path]
     ps_looked_file: Path
     amp_disp_looked_file: Path
     shp_count_files: list[Path]
@@ -213,10 +217,15 @@ def run(
         logger.info(f"Skipping EVD step, {len(phase_linked_slcs)} files already exist")
         comp_slc_list = sorted(pl_path.glob("compressed*tif"))
         temp_coh_files = sorted(pl_path.glob("temporal_coherence*tif"))
+        closure_phase_coh_files = sorted(pl_path.glob("closure_phase_coh*tif"))
         shp_count_files = sorted(pl_path.glob("shp_count*tif"))
         similarity_files = sorted(pl_path.glob("*similarity*tif"))
         crlb_files = sorted(pl_path.rglob("crlb*tif"))
-        closure_phase_files = sorted(pl_path.rglob("closure_phase*tif"))
+        # Match per-triplet closure_phase_<d1>_<d2>_<d3>.tif but not
+        # closure_phase_coh_<start>_<end>.tif (which is a separate scalar raster)
+        closure_phase_files = sorted(
+            f for f in pl_path.rglob("closure_phase_*tif") if "coh" not in f.stem
+        )
         multilooked_coherence_files = sorted(pl_path.rglob("multilooked_coherence*tif"))
     else:
         logger.info(f"Running sequential EMI step in {pl_path}")
@@ -240,6 +249,7 @@ def run(
             multilooked_coherence_files,
             comp_slc_list,
             temp_coh_files,
+            closure_phase_coh_files,
             shp_count_files,
             similarity_files,
         ) = sequential.run_wrapped_phase_sequential(
@@ -297,6 +307,7 @@ def run(
             multilooked_coherence_files,
             comp_slc_list,
             temp_coh_files,
+            closure_phase_coh_files,
             ps_looked_file,
             amp_disp_looked_file,
             shp_count_files,
@@ -345,6 +356,7 @@ def run(
         multilooked_coherence_files,
         comp_slc_list,
         temp_coh_files,
+        closure_phase_coh_files,
         ps_looked_file,
         amp_disp_looked_file,
         shp_count_files,

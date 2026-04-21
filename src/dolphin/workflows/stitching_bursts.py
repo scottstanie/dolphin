@@ -39,6 +39,8 @@ class StitchedOutputs:
     """List of Paths to Cramer Rao Lower Bound (CRLB) files created."""
     closure_phase_files: list[Path]
     """List of Paths to closure phase files created."""
+    closure_phase_coh_files: list[Path]
+    """List of Paths to weighted closure-phase coefficient (gamma_CPw) files."""
     multilooked_coherence_files: list[Path]
     """List of Paths to nearest-N coherence magnitude files created."""
     ps_file: Path
@@ -54,6 +56,7 @@ def run(
     ps_file_list: Sequence[Path],
     crlb_file_list: Sequence[Path],
     closure_phase_file_list: Sequence[Path],
+    closure_phase_coh_file_list: Sequence[Path],
     multilooked_coherence_file_list: Sequence[Path],
     amp_dispersion_list: Sequence[Path],
     shp_count_file_list: Sequence[Path],
@@ -80,6 +83,8 @@ def run(
         Sequence of paths to the (looked) Cramer Rao Lower Bound (CRLB) files.
     closure_phase_file_list : Sequence[Path]
         Sequence of paths to the (looked) closure phase files.
+    closure_phase_coh_file_list : Sequence[Path]
+        Sequence of paths to the weighted closure-phase coefficient files.
     multilooked_coherence_file_list : Sequence[Path]
         Sequence of paths to the nearest-N coherence magnitude files.
     amp_dispersion_list : Sequence[Path]
@@ -222,6 +227,20 @@ def run(
     )
     stitched_closure_phase_files = list(date_to_closure_phase_path.values())
 
+    # Stitch the weighted closure-phase coefficient files
+    date_to_closure_phase_coh_path = stitching.merge_by_date(
+        image_file_list=closure_phase_coh_file_list,
+        file_date_fmt=file_date_fmt,
+        output_dir=stitched_ifg_dir,
+        output_prefix="auto",
+        options=EXTRA_COMPRESSED_TIFF_OPTIONS,
+        out_bounds=out_bounds,
+        out_bounds_epsg=output_options.bounds_epsg,
+        dest_epsg=output_options.epsg,
+        num_workers=num_workers,
+    )
+    stitched_closure_phase_coh_files = list(date_to_closure_phase_coh_path.values())
+
     # Stitch the nearest coherence files
     date_to_multilooked_coherence_path = stitching.merge_by_date(
         image_file_list=multilooked_coherence_file_list,
@@ -259,6 +278,9 @@ def run(
             stitched_multilooked_coherence_files, image_type=ImageType.CORRELATION
         )
         create_overviews(stitched_temp_coh_files, image_type=ImageType.CORRELATION)
+        create_overviews(
+            stitched_closure_phase_coh_files, image_type=ImageType.CORRELATION
+        )
         create_overviews(stitched_shp_count_files, image_type=ImageType.PS)
         create_overviews(stitched_similarity_files, image_type=ImageType.CORRELATION)
         create_image_overviews(stitched_ps_file, image_type=ImageType.PS)
@@ -272,6 +294,7 @@ def run(
         stitched_similarity_files,
         stitched_crlb_files,
         stitched_closure_phase_files,
+        stitched_closure_phase_coh_files,
         stitched_multilooked_coherence_files,
         stitched_ps_file,
         stitched_amp_disp_file,

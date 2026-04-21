@@ -1133,8 +1133,20 @@ def invert_unw_network(
         # Ensure we have a 2d mask (i.e., not np.ma.nomask)
         if masked_pixel_sum.ndim == 0:
             masked_pixel_sum = np.zeros(stack.shape[1:], dtype=bool)
-        # Mask the output if any inputs are missing
-        masked_pixels = masked_pixel_sum > 0
+        # Only mask the output when the remaining (unmasked) ifgs are too few
+        # to solve the inversion system. With N unknowns (len(sar_dates) - 1),
+        # fewer than N remaining rows of A is *sufficient* for rank-deficiency.
+        # It's not *necessary* (a disconnected remaining network can also be
+        # rank-deficient with enough rows), but the cheap count-based check
+        # prevents catastrophic zero-output for highly-overdetermined networks
+        # where a single nodata-matching unw value (e.g., a pixel that happened
+        # to unwrap to 0.0, which equals the nodata sentinel) would otherwise
+        # invalidate the entire time series at that pixel. The L1 solver is
+        # robust to isolated outlier rows (breakdown point ~50%); the L2 path
+        # with correlation weights or conncomp flags already censors properly.
+        n_ifgs_total = stack.shape[0]
+        n_unknowns = A.shape[1]
+        masked_pixels = (n_ifgs_total - masked_pixel_sum) < n_unknowns
         # Setup the (optional) second reader: either conncomps, or correlation
         if len(readers) == 2 and method == "L2":
             if conncomp_file_list is not None:

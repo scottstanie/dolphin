@@ -237,22 +237,29 @@ def repack_rasters(
 
     """
     import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
 
-    from tqdm.contrib.concurrent import process_map
+    from tqdm.auto import tqdm
 
-    mp_context = mp.get_context("forkserver")
-    process_map(
-        _repack_raster_partial(
-            output_dir=output_dir,
-            keep_bits=keep_bits,
-            block_shape=block_shape,
-            **output_options,
-        ),
-        raster_files,
-        max_workers=num_workers,
-        desc="Processing Rasters",
-        mp_context=mp_context,
+    fn = _repack_raster_partial(
+        output_dir=output_dir,
+        keep_bits=keep_bits,
+        block_shape=block_shape,
+        **output_options,
     )
+    # `tqdm.contrib.concurrent.process_map` does not forward `mp_context`
+    # to the executor, so wire up `ProcessPoolExecutor` directly.
+    mp_context = mp.get_context("forkserver")
+    with ProcessPoolExecutor(
+        max_workers=num_workers, mp_context=mp_context
+    ) as executor:
+        list(
+            tqdm(
+                executor.map(fn, raster_files),
+                total=len(raster_files),
+                desc="Processing Rasters",
+            )
+        )
 
 
 def round_mantissa(z: np.ndarray, keep_bits: int = 10, chunk_rows: int = 1024) -> None:

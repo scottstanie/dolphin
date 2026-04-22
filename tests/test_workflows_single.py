@@ -1,3 +1,6 @@
+import datetime
+from pathlib import Path
+
 import pytest
 
 from dolphin import stack
@@ -43,3 +46,102 @@ def test_sequential_gtiff(tmp_path, slc_file_list, write_extra: bool):
     assert len(list(output_folder.glob("2*.slc.tif"))) == 3
     assert len(list(output_folder.glob("compressed_*tif"))) == 1
     assert len(list(output_folder.glob("temporal_coherence*tif"))) == 1
+
+
+def _duplicate_compressed_base_ministack() -> stack.MiniStackInfo:
+    """Build a ministack with two compressed SLCs sharing base date 20220101.
+
+    Mirrors the ``CompressedSlcPlan.ALWAYS_FIRST`` sequential case where every
+    compressed SLC carries the same base (reference) phase date.
+    """
+    ref = datetime.datetime(2022, 1, 1)
+    return stack.MiniStackInfo(
+        file_list=[Path(f"f{i}.tif") for i in range(5)],
+        dates=[
+            [ref, datetime.datetime(2022, 1, 1), datetime.datetime(2022, 1, 2)],
+            [ref, datetime.datetime(2022, 1, 2), datetime.datetime(2022, 1, 3)],
+            [datetime.datetime(2022, 1, 3)],
+            [datetime.datetime(2022, 1, 4)],
+            [datetime.datetime(2022, 1, 5)],
+        ],
+        is_compressed=[True, True, False, False, False],
+    )
+
+
+def test_get_multilooked_coherence_output_info_all_real():
+    ms = stack.MiniStackInfo(
+        file_list=[Path(f"f{i}.tif") for i in range(4)],
+        dates=[[datetime.datetime(2022, 1, i + 1)] for i in range(4)],
+        is_compressed=[False] * 4,
+    )
+    fns, bands = single._get_multilooked_coherence_output_info(ms, n=2)
+    # For 4 SLCs, n=2: pairs (0,1),(1,2),(2,3),(0,2),(1,3) — all have distinct dates.
+    assert bands == [0, 1, 2, 3, 4]
+    assert fns == [
+        "multilooked_coherence_20220101_20220102.tif",
+        "multilooked_coherence_20220102_20220103.tif",
+        "multilooked_coherence_20220103_20220104.tif",
+        "multilooked_coherence_20220101_20220103.tif",
+        "multilooked_coherence_20220102_20220104.tif",
+    ]
+
+
+def test_get_multilooked_coherence_output_info_duplicate_compressed_base():
+    ms = _duplicate_compressed_base_ministack()
+    fns, bands = single._get_multilooked_coherence_output_info(ms, n=2)
+    # Raw pairs for 5 SLCs, n=2: (0,1),(1,2),(2,3),(3,4),(0,2),(1,3),(2,4).
+    # (0,1) is dropped: both compressed SLCs carry base date 20220101 → self-pair.
+    # (0,2) is dropped: same filename as (1,2) — both yield 20220101_20220103.
+    assert bands == [1, 2, 3, 5, 6]
+    assert fns == [
+        "multilooked_coherence_20220101_20220103.tif",
+        "multilooked_coherence_20220103_20220104.tif",
+        "multilooked_coherence_20220104_20220105.tif",
+        "multilooked_coherence_20220101_20220104.tif",
+        "multilooked_coherence_20220103_20220105.tif",
+    ]
+    assert len(fns) == len(set(fns))
+
+
+def test_run_single_nearest_n_coherence_duplicate_compressed_base(
+    tmp_path, slc_file_list
+):
+    """Two compressed SLCs sharing a base date must not yield colliding rasters."""
+    vrt_file = tmp_path / "slc_stack.vrt"
+    files = slc_file_list[:5]
+    vrt_stack = _readers.VRTStack(files, outfile=vrt_file)
+
+    ms = _duplicate_compressed_base_ministack()
+    # Swap in the real on-disk file paths (the VRT reader is what matters for I/O;
+    # `dates`/`is_compressed` drive the filename generation we are testing).
+    ministack = stack.MiniStackInfo(
+        file_list=vrt_stack.file_list,
+        dates=ms.dates,
+        is_compressed=ms.is_compressed,
+    )
+
+    output_folder = tmp_path / "single"
+    single.run_wrapped_phase_single(
+        vrt_stack=vrt_stack,
+        ministack=ministack,
+        output_folder=output_folder,
+        half_window={"x": 2, "y": 1},
+        strides={"x": 1, "y": 1},
+        shp_method="rect",
+        write_crlb=False,
+        write_closure_phase=False,
+        nearest_n_coherence=2,
+    )
+
+    coh_files = sorted((output_folder / "multilooked_coherence").glob("*.tif"))
+    names = [p.name for p in coh_files]
+    # No self-date pair written, and every filename is unique on disk.
+    assert "multilooked_coherence_20220101_20220101.tif" not in names
+    assert len(names) == len(set(names))
+    assert set(names) == {
+        "multilooked_coherence_20220101_20220103.tif",
+        "multilooked_coherence_20220103_20220104.tif",
+        "multilooked_coherence_20220104_20220105.tif",
+        "multilooked_coherence_20220101_20220104.tif",
+        "multilooked_coherence_20220103_20220105.tif",
+    }

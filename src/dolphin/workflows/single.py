@@ -149,12 +149,17 @@ def run_wrapped_phase_single(
         )
 
     multilooked_coherence_files: list[Path] = []
+    multilooked_coherence_band_indices: list[int] = []
     if nearest_n_coherence > 0:
         multilooked_coh_output_folder = output_folder / "multilooked_coherence"
         multilooked_coh_output_folder.mkdir(exist_ok=True)
+        (
+            multilooked_coherence_filenames,
+            multilooked_coherence_band_indices,
+        ) = _get_multilooked_coherence_output_info(ministack, nearest_n_coherence)
         multilooked_coherence_files = setup_output_folder(
             ministack=ministack,
-            name_generator=_make_name_multilooked_coherence(nearest_n_coherence),
+            name_generator=lambda _ms: multilooked_coherence_filenames,
             strides=strides,
             dtype="float32",
             output_folder=multilooked_coh_output_folder,
@@ -350,10 +355,16 @@ def run_wrapped_phase_single(
                     )
 
             if nearest_n_coherence > 0:
-                # Save nearest coherence magnitudes
-                for i, coh_file in enumerate(multilooked_coherence_files):
+                # Save nearest coherence magnitudes, skipping bands whose date
+                # pair has duplicate dates (from multiple compressed SLCs that
+                # share a reference/base date).
+                for coh_file, band_idx in zip(
+                    multilooked_coherence_files,
+                    multilooked_coherence_band_indices,
+                    strict=True,
+                ):
                     coh_img = pl_output.multilooked_coherence[
-                        out_trim_rows, out_trim_cols, i
+                        out_trim_rows, out_trim_cols, band_idx
                     ]
                     writer.queue_write(
                         coh_img, coh_file, out_rows.start, out_cols.start
@@ -552,37 +563,63 @@ def _name_closure_phases(ministack: MiniStackInfo) -> list[str]:
     return [f"closure_phase_{triplet}.tif" for triplet in date_triplets]
 
 
-def _make_name_multilooked_coherence(n: int) -> Callable[[MiniStackInfo], list[str]]:
-    """Create a function that generates nearest coherence filenames.
+def _get_multilooked_coherence_output_info(
+    ministack: MiniStackInfo, n: int
+) -> tuple[list[str], list[int]]:
+    """Get filenames and band indices for the nearest-N coherence outputs.
+
+    Skips pairs that would produce invalid or colliding output filenames when a
+    ministack contains multiple compressed SLCs sharing the same base (reference)
+    date. Two cases are dropped:
+
+    * ``date_strs[ref] == date_strs[sec]``: e.g. a pair between two compressed SLCs
+      sharing a base date would yield ``multilooked_coherence_20200101_20200101.tif``.
+    * a date-pair label that has already been emitted by an earlier pair: e.g. both
+      ``(ccslc_base=20200101, real=20200102)`` and
+      ``(ccslc_base=20200101, real=20200102)`` would collide on disk, and the
+      duplicate rasters break downstream stitching in radar coordinates (which has
+      no geotransform for GDAL to align on).
 
     Parameters
     ----------
+    ministack : MiniStackInfo
+        The ministack whose SLC dates define the pair labels.
     n : int
         Number of diagonals to extract (bandwidth).
 
     Returns
     -------
-    Callable[[MiniStackInfo], list[str]]
-        Function that generates filenames for the nearest coherence outputs.
+    filenames : list[str]
+        Output filenames for the pairs that have distinct dates.
+    band_indices : list[int]
+        Indices into the flat nearest-N coherence output (the last axis of
+        ``pl_output.multilooked_coherence``) matching each returned filename.
 
     """
     from dolphin.phase_link._multilooked_coherence import (
         get_multilooked_coherence_ifg_pairs,
     )
 
-    def _name_multilooked_coherence(ministack: MiniStackInfo) -> list[str]:
-        date_strs = ministack.get_date_str_list()
-        # Get only the first date in case of compressed
-        date_strs = [d.split("_")[0] for d in date_strs]
-        num_slcs = len(date_strs)
-        pairs = get_multilooked_coherence_ifg_pairs(num_slcs, n)
-        filenames = []
-        for ref_idx, sec_idx in pairs:
-            date_pair = f"{date_strs[ref_idx]}_{date_strs[sec_idx]}"
-            filenames.append(f"multilooked_coherence_{date_pair}.tif")
-        return filenames
-
-    return _name_multilooked_coherence
+    date_strs = ministack.get_date_str_list()
+    # Get only the first date in case of compressed
+    date_strs = [d.split("_")[0] for d in date_strs]
+    num_slcs = len(date_strs)
+    pairs = get_multilooked_coherence_ifg_pairs(num_slcs, n)
+    filenames: list[str] = []
+    band_indices: list[int] = []
+    seen: set[str] = set()
+    for flat_idx, (ref_idx, sec_idx) in enumerate(pairs):
+        if date_strs[ref_idx] == date_strs[sec_idx]:
+            continue
+        filename = (
+            f"multilooked_coherence_{date_strs[ref_idx]}_{date_strs[sec_idx]}.tif"
+        )
+        if filename in seen:
+            continue
+        seen.add(filename)
+        filenames.append(filename)
+        band_indices.append(flat_idx)
+    return filenames, band_indices
 
 
 def setup_output_folder(

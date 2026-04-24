@@ -103,6 +103,76 @@ def test_get_multilooked_coherence_output_info_duplicate_compressed_base():
     assert len(fns) == len(set(fns))
 
 
+def test_get_closure_phase_output_info_all_real():
+    ms = stack.MiniStackInfo(
+        file_list=[Path(f"f{i}.tif") for i in range(5)],
+        dates=[[datetime.datetime(2022, 1, i + 1)] for i in range(5)],
+        is_compressed=[False] * 5,
+    )
+    fns, bands = single._get_closure_phase_output_info(ms)
+    # 5 SLCs → 3 triplets (0,1,2), (1,2,3), (2,3,4), all with distinct dates.
+    assert bands == [0, 1, 2]
+    assert fns == [
+        "closure_phase_20220101_20220102_20220103.tif",
+        "closure_phase_20220102_20220103_20220104.tif",
+        "closure_phase_20220103_20220104_20220105.tif",
+    ]
+
+
+def test_get_closure_phase_output_info_duplicate_compressed_base():
+    ms = _duplicate_compressed_base_ministack()
+    fns, bands = single._get_closure_phase_output_info(ms)
+    # Triplets (i, i+1, i+2) for 5 SLCs → i in {0, 1, 2}.
+    # i=0 → (20220101, 20220101, 20220103) dropped: d0 == d1.
+    # i=1 → (20220101, 20220103, 20220104) kept.
+    # i=2 → (20220103, 20220104, 20220105) kept.
+    assert bands == [1, 2]
+    assert fns == [
+        "closure_phase_20220101_20220103_20220104.tif",
+        "closure_phase_20220103_20220104_20220105.tif",
+    ]
+    assert len(fns) == len(set(fns))
+
+
+def test_run_single_closure_phase_duplicate_compressed_base(tmp_path, slc_file_list):
+    """Two compressed SLCs sharing a base date must not yield degenerate triplets."""
+    vrt_file = tmp_path / "slc_stack.vrt"
+    files = slc_file_list[:5]
+    vrt_stack = _readers.VRTStack(files, outfile=vrt_file)
+
+    ms = _duplicate_compressed_base_ministack()
+    ministack = stack.MiniStackInfo(
+        file_list=vrt_stack.file_list,
+        dates=ms.dates,
+        is_compressed=ms.is_compressed,
+    )
+
+    output_folder = tmp_path / "single"
+    single.run_wrapped_phase_single(
+        vrt_stack=vrt_stack,
+        ministack=ministack,
+        output_folder=output_folder,
+        half_window={"x": 2, "y": 1},
+        strides={"x": 1, "y": 1},
+        shp_method="rect",
+        write_crlb=False,
+        write_closure_phase=True,
+    )
+
+    closure_files = sorted((output_folder / "closure_phases").glob("*.tif"))
+    names = [p.name for p in closure_files]
+    # No degenerate triplet (any two dates equal) was written.
+    for name in names:
+        # name looks like "closure_phase_<d0>_<d1>_<d2>.tif"
+        d0, d1, d2 = name.removeprefix("closure_phase_").removesuffix(".tif").split("_")
+        assert len({d0, d1, d2}) == 3, f"Degenerate triplet written: {name}"
+    assert len(names) == len(set(names))
+    assert set(names) == {
+        "closure_phase_20220101_20220103_20220104.tif",
+        "closure_phase_20220103_20220104_20220105.tif",
+    }
+
+
 def test_run_single_nearest_n_coherence_duplicate_compressed_base(
     tmp_path, slc_file_list
 ):

@@ -126,6 +126,7 @@ def run_wrapped_phase_single(
     crlb_output_folder.mkdir(exist_ok=True)
     phase_linked_crlb_files: list[Path] = []
     closure_phase_files: list[Path] = []
+    closure_phase_band_indices: list[int] = []
     if write_crlb:
         phase_linked_crlb_files = setup_output_folder(
             ministack=ministack,
@@ -139,9 +140,13 @@ def run_wrapped_phase_single(
     if write_closure_phase:
         closure_phases_output_folder = output_folder / "closure_phases"
         closure_phases_output_folder.mkdir(exist_ok=True)
+        (
+            closure_phase_filenames,
+            closure_phase_band_indices,
+        ) = _get_closure_phase_output_info(ministack)
         closure_phase_files = setup_output_folder(
             ministack=ministack,
-            name_generator=_name_closure_phases,
+            name_generator=lambda _ms: closure_phase_filenames,
             strides=strides,
             dtype="float32",
             output_folder=closure_phases_output_folder,
@@ -345,10 +350,16 @@ def run_wrapped_phase_single(
                     writer.queue_write(img, f, out_rows.start, out_cols.start)
 
             if write_closure_phase:
-                # Save closure phases (N-2 images for N dates)
-                for i, closure_file in enumerate(closure_phase_files):
+                # Save closure phases, skipping triplets that don't form a valid
+                # closure triangle (e.g. duplicate base dates across compressed
+                # SLCs collapsing two of the three positions to the same date).
+                for closure_file, band_idx in zip(
+                    closure_phase_files,
+                    closure_phase_band_indices,
+                    strict=True,
+                ):
                     closure_img = pl_output.closure_phases[
-                        out_trim_rows, out_trim_cols, i
+                        out_trim_rows, out_trim_cols, band_idx
                     ]
                     writer.queue_write(
                         closure_img, closure_file, out_rows.start, out_cols.start
@@ -552,15 +563,48 @@ def _name_crlbs(ministack: MiniStackInfo) -> list[str]:
     return [f"crlb_{Path(d).stem}.tif" for d in date_strs]
 
 
-def _name_closure_phases(ministack: MiniStackInfo) -> list[str]:
-    """Generate closure phase triplet filenames for the ministack."""
+def _get_closure_phase_output_info(
+    ministack: MiniStackInfo,
+) -> tuple[list[str], list[int]]:
+    """Get filenames and band indices for the nearest-neighbor closure phases.
+
+    The closure phase tensor is computed on sliding triplets ``(i, i+1, i+2)``
+    for ``i`` in ``[0, N-3]`` and stored in the last axis of
+    ``pl_output.closure_phases``. When a ministack contains multiple compressed
+    SLCs that share the same base (reference) date, some triplets degenerate to
+    only two distinct dates and stop forming a valid closure triangle, e.g.
+    ``closure_phase_20200101_20200101_20200103.tif``. Those triplets are
+    skipped here so the corresponding band is not written to disk. We also
+    de-dupe by filename defensively in case two triplets ever project to the
+    same label.
+
+    Returns
+    -------
+    filenames : list[str]
+        Output filenames for triplets with three distinct dates.
+    band_indices : list[int]
+        Indices into the last axis of ``pl_output.closure_phases`` matching
+        each returned filename.
+
+    """
     date_strs = ministack.get_date_str_list()
     # Get only the first date in case of compressed
     date_strs = [d.split("_")[0] for d in date_strs]
-    # Create triplets
-    num_closure_phases = len(date_strs) - 2
-    date_triplets = ["_".join(date_strs[i : i + 3]) for i in range(num_closure_phases)]
-    return [f"closure_phase_{triplet}.tif" for triplet in date_triplets]
+    num_triplets = len(date_strs) - 2
+    filenames: list[str] = []
+    band_indices: list[int] = []
+    seen: set[str] = set()
+    for i in range(num_triplets):
+        d0, d1, d2 = date_strs[i], date_strs[i + 1], date_strs[i + 2]
+        if d0 in (d1, d2) or d1 == d2:
+            continue
+        filename = f"closure_phase_{d0}_{d1}_{d2}.tif"
+        if filename in seen:
+            continue
+        seen.add(filename)
+        filenames.append(filename)
+        band_indices.append(i)
+    return filenames, band_indices
 
 
 def _get_multilooked_coherence_output_info(

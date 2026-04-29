@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from opera_utils import group_by_date
 from shapely import from_wkt
 
-from dolphin import stitching
+from dolphin import burst_alignment, stitching
 from dolphin._log import log_runtime
 from dolphin._overviews import ImageType, create_image_overviews, create_overviews
 from dolphin._types import Bbox
@@ -66,6 +67,9 @@ def run(
     file_date_fmt: str = "%Y%m%d",
     corr_window_size: tuple[int, int] = (11, 11),
     num_workers: int = 3,
+    run_burst_align: bool = False,
+    burst_align_planar_ramp: bool = False,
+    burst_align_max_fringes: float | None = 0.5,
 ) -> StitchedOutputs:
     """Stitch together spatial subsets from phase linking.
 
@@ -107,6 +111,16 @@ def run(
     num_workers : int
         Number of threads to use for stitching in parallel.
         Default = 3
+    run_burst_align : bool
+        If True, estimate and remove inter-burst phase artifacts from the
+        per-burst interferograms before merging. Default False.
+    burst_align_planar_ramp : bool
+        If True (and `run_burst_align` is True), fit a planar ramp per
+        burst (offset + cx*x + cy*y) instead of just a constant offset.
+        Default False.
+    burst_align_max_fringes : float or None
+        Tikhonov prior strength on the planar slopes, in cycles of phase
+        across one burst extent. Default 0.5. Pass None to disable.
 
     Returns
     -------
@@ -124,6 +138,15 @@ def run(
         out_bounds = Bbox(*from_wkt(output_options.bounds_wkt).bounds)
     else:
         out_bounds = None
+
+    if run_burst_align:
+        ifg_file_list = _align_bursts_by_date(
+            ifg_file_list,
+            file_date_fmt=file_date_fmt,
+            output_dir=stitched_ifg_dir / "burst_aligned",
+            planar_ramp=burst_align_planar_ramp,
+            max_fringes_per_burst=burst_align_max_fringes,
+        )
 
     date_to_ifg_path = stitching.merge_by_date(
         image_file_list=ifg_file_list,
@@ -299,3 +322,50 @@ def run(
         stitched_ps_file,
         stitched_amp_disp_file,
     )
+
+
+def _align_bursts_by_date(
+    ifg_file_list: Sequence[Path],
+    *,
+    file_date_fmt: str,
+    output_dir: Path,
+    planar_ramp: bool,
+    max_fringes_per_burst: float | None,
+) -> list[Path]:
+    """Estimate per-burst phase corrections and rewrite the ifg file list.
+
+    The alignment is independent across date pairs: per-burst calibration
+    and ionospheric ramps differ from one ifg to the next, so each pair
+    gets its own LSQ. Single-burst date pairs are passed through unchanged.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    grouped = group_by_date(list(ifg_file_list), file_date_fmt=file_date_fmt)
+    degree = 1 if planar_ramp else 0
+
+    rewrite: dict[Path, Path] = {}
+    for dates, files in grouped.items():
+        if len(files) < 2:
+            continue
+        date_str = "_".join(d.strftime(file_date_fmt) for d in dates)
+        date_out = output_dir / date_str
+        new_paths, corrections = burst_alignment.align_bursts(
+            files,
+            output_dir=date_out,
+            degree=degree,
+            max_fringes_per_burst=max_fringes_per_burst,
+        )
+        for src, dst in zip(files, new_paths, strict=False):
+            rewrite[Path(src)] = dst
+        nonzero = sum(
+            1
+            for c in corrections.values()
+            if c.offset != 0.0 or c.cx != 0.0 or c.cy != 0.0
+        )
+        logger.info(
+            "burst align %s: %d burst(s), %d corrected",
+            date_str,
+            len(files),
+            nonzero,
+        )
+
+    return [rewrite.get(Path(f), Path(f)) for f in ifg_file_list]

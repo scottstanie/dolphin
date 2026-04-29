@@ -353,6 +353,39 @@ class UnwrapOptions(BaseModel, extra="forbid"):
             "Whether to run the unwrapping step after wrapped phase estimation."
         ),
     )
+    run_burst_align: bool = Field(
+        False,
+        description=(
+            "Whether to estimate and remove inter-burst phase artifacts from the"
+            " per-burst wrapped interferograms before stitching. Each burst is"
+            " corrected by a single offset (and, when `burst_align_planar_ramp`"
+            " is True, an additional planar ramp) estimated from the overlap"
+            " between bursts. This runs before the stitching step even though"
+            " the option lives here, since once bursts are merged the per-burst"
+            " correction can no longer be applied."
+        ),
+    )
+    burst_align_planar_ramp: bool = Field(
+        False,
+        description=(
+            "If True (and `run_burst_align` is True), fit a planar ramp"
+            " (offset + cx*x + cy*y) per burst instead of a constant offset."
+            " Useful when ionospheric ramps differ across the swath. Ignored if"
+            " `run_burst_align` is False."
+        ),
+    )
+    burst_align_max_fringes: float | None = Field(
+        0.5,
+        description=(
+            "Tikhonov prior on per-burst planar slopes when"
+            " `burst_align_planar_ramp` is True. The prior treats a slope"
+            " producing this many cycles of phase across the burst extent as one"
+            " standard deviation, pulling slopes toward zero unless overlap data"
+            " has SNR to justify them. Default 0.5 (half a fringe per burst),"
+            " conservative for S1 with restituted orbits. Set to null to"
+            " disable the prior."
+        ),
+    )
     run_goldstein: bool = Field(
         False,
         description="Whether to run Goldstein filtering step on wrapped interferogram.",

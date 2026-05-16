@@ -11,11 +11,20 @@ use num_complex::Complex;
 
 use phase_link_demo::{pipeline::run_in_memory, C32};
 
+/// Read a `usize` from an env var, falling back to `default`.
+/// (Keeps parity with the Go demo's `-rows`/`-cols` flags without a CLI dep.)
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
 fn main() {
-    let nslc = 20usize;
-    let rows = 60usize;
-    let cols = 60usize;
-    let half = 5usize;
+    let nslc = env_usize("NSLC", 20);
+    let rows = env_usize("ROWS", 60);
+    let cols = env_usize("COLS", 60);
+    let half = env_usize("HALF", 5);
 
     // True phase history (one value per SLC, shared across all pixels).
     let true_phase: Vec<f32> = (0..nslc).map(|k| 0.4 * k as f32).collect();
@@ -46,7 +55,9 @@ fn main() {
     }
 
     println!("Running phase linking on ({nslc}, {rows}, {cols}) stack with half-window {half}…");
+    let start = std::time::Instant::now();
     let phase = run_in_memory(stack.view(), half, half);
+    let elapsed = start.elapsed();
 
     // Compare interior (where window fits) against ground truth.
     let mut total_err = 0.0f32;
@@ -66,6 +77,11 @@ fn main() {
     }
     let mean_err = total_err / count as f32;
     println!("mean |phase error| over interior pixels = {mean_err:.4} rad");
+    println!(
+        "elapsed: {:?}  ({} output pixels)",
+        elapsed,
+        (rows - 2 * half) * (cols - 2 * half)
+    );
     assert!(mean_err < 0.1, "phase error too large: {mean_err}");
     println!("OK");
 }

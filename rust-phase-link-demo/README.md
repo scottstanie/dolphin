@@ -56,7 +56,13 @@ The library + example + tests have **no system dependencies**:
 ```bash
 cargo test --release
 cargo run --release --example synthetic
+# the synthetic bench prints timing; size is configurable via env vars:
+ROWS=200 COLS=200 HALF=5 NSLC=20 cargo run --release --example synthetic
 ```
+
+> There is a sibling **Go** port in `../go-phase-link-demo` with the same
+> structure and CLI contract, plus a Rust-vs-Go timing comparison and an
+> honest assessment of where gonum does/doesn't fit. See its README.
 
 The CLI binary requires `libgdal` (`apt install libgdal-dev` on Debian/Ubuntu,
 `brew install gdal` on macOS), then:

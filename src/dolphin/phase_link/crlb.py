@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from functools import partial
 
+import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import Array, jit
+from jax import Array, jit, vmap
 from jax.scipy.linalg import solve
 from numpy.linalg import inv
 from numpy.typing import ArrayLike
@@ -250,6 +251,220 @@ def compute_crlb_jax(
         nanv = jnp.full(sig.shape, jnp.nan, dtype=sig.dtype)
         sig = jnp.where(mask, nanv, sig)
     return sig
+
+
+def penalization_weight(gamma_abs: Array, eps: float = 1e-10) -> Array:
+    r"""Penalization weights from Zwieback & Meyer 2022 Improvement 2 (eq. 13).
+
+    Returns a per-element weight matrix ``W`` such that the penalized
+    sufficient statistic is ``C_tilde = C * W`` (Hadamard product). At high
+    coherence ``W ≈ 1`` (no penalization); at low coherence ``W → 0``,
+    suppressing the bias-prone entries.
+
+    The published coefficients were fit at ``L = 100`` (R = 1200 replicates,
+    P = 2). For ``L`` substantially larger than 100 the bias is smaller and
+    these weights are slightly over-conservative; for ``L`` substantially
+    smaller they may under-penalize.
+
+    Parameters
+    ----------
+    gamma_abs : Array
+        Coherence magnitudes ``|gamma_ij|`` in [0, 1], shape ``(..., N, N)``.
+        Diagonal entries are forced to 1 (no autocorrelation penalty).
+    eps : float
+        Floor to avoid ``log(0)`` for fully decorrelated entries.
+
+    Returns
+    -------
+    Array
+        Weights in (0, 1], same shape as ``gamma_abs``, with the diagonal
+        forced to 1.
+
+    Notes
+    -----
+    The paper writes the fit as ``log(1 - W) = ...``; evaluating that form
+    yields ``W → 0`` at high coherence, which contradicts the physical
+    requirement that ``W = 1`` means "no penalization" (Section III-A,
+    "If W_ij = 1 for all i, j, there is no penalization"). The form
+    ``log W = -7 s1 - 0.6 s2`` reproduces Fig. 3(b): full penalization
+    only for ``gamma <~ 0.03`` and weights ``≈ 1`` for ``gamma >~ 0.3``.
+    A sign-convention sanity-check is included in the unit tests.
+
+    References
+    ----------
+    Zwieback, S. and Meyer, F. J. (2022). Reliable InSAR Phase History
+    Uncertainty Estimates. *IEEE Trans. Geosci. Remote Sens.* 60, 5222109,
+    Eq. (13).
+
+    """
+    log_gamma = jnp.log(jnp.maximum(gamma_abs, eps))
+    s1 = 1.0 / (1.0 + jnp.exp(15.02 * (log_gamma + 2.6)))
+    s2 = 1.0 / (1.0 + jnp.exp(3.2 * (log_gamma + 1.8)))
+    W = jnp.exp(-7.0 * s1 - 0.6 * s2)
+
+    N = gamma_abs.shape[-1]
+    diag_idx = jnp.arange(N)
+    return W.at[..., diag_idx, diag_idx].set(1.0)
+
+
+def _make_observed_fi_neg_loglik(N: int, reference_idx: int):
+    r"""Build the Gaussian DS negative log-likelihood used for observed-FI Hessians.
+
+    Returns a closure ``neg_loglik(beta, C, num_looks)`` returning a real scalar.
+    The flat parameter vector ``beta`` packs:
+
+      ``beta[:N-1]``  : phase parameters at the ``N-1`` non-reference epochs
+                        (the reference phase is fixed to zero internally).
+      ``beta[N-1:]``  : the ``N(N-1)/2`` upper-triangular off-diagonal entries
+                        of the symmetric, real, unit-diagonal magnitude matrix G.
+
+    The log-likelihood (dropping constants) is
+
+        \\ell(\\beta) = -L \\log\\det \\Sigma - L \\, \\mathrm{tr}(\\Sigma^{-1} C),
+
+    with ``Sigma = G \\circ exp(i theta) exp(i theta)^H`` (see Zwieback & Meyer
+    2022 Eqs. (5)-(7)). We return ``-\\ell``.
+    """
+    n_theta = N - 1
+    iu_row, iu_col = jnp.triu_indices(N, k=1)
+    nonref = jnp.concatenate(
+        [jnp.arange(reference_idx), jnp.arange(reference_idx + 1, N)]
+    )
+
+    def neg_loglik(beta: Array, C: Array, num_looks: float) -> Array:
+        # Reconstruct full theta (length N) with theta[reference_idx] = 0
+        theta_full = jnp.zeros(N, dtype=beta.dtype).at[nonref].set(beta[:n_theta])
+
+        # Reconstruct symmetric, unit-diagonal G from upper-triangular off-diags
+        G_off = (
+            jnp.zeros((N, N), dtype=beta.dtype).at[iu_row, iu_col].set(beta[n_theta:])
+        )
+        G = G_off + G_off.T + jnp.eye(N, dtype=beta.dtype)
+
+        # Sigma = G ∘ exp(iθ) exp(iθ)^H
+        phasor = jnp.exp(1j * theta_full)
+        Sigma = G.astype(C.dtype) * jnp.outer(phasor, jnp.conj(phasor))
+
+        # -L logdet Σ - L tr(Σ⁻¹ C), then return the negative
+        _, logdet = jnp.linalg.slogdet(Sigma)
+        Sinv_C = jnp.linalg.solve(Sigma, C)
+        return num_looks * (logdet + jnp.trace(Sinv_C)).real
+
+    return neg_loglik
+
+
+@partial(jit, static_argnums=(2, 3, 4))
+def compute_observed_fi_crlb(
+    coherence_matrices: Array,
+    phase_estimates: Array,
+    num_looks: float,
+    reference_idx: int,
+    fim_jitter: float = 1e-6,
+) -> Array:
+    r"""Observed-FI based phase uncertainty (Zwieback & Meyer 2022, Improvement 1).
+
+    Computes the observed Fisher information matrix at the supplied estimates
+    of phase and magnitudes, then forms the Schur-complement marginal
+    covariance for the phase block:
+
+    \\begin{equation}
+        \\mathbf{K}^f_{\\theta\\theta} \\;=\\;
+            \\big(\\mathbf{F}_{\\theta\\theta}
+            - \\mathbf{F}_{\\theta G}\\,\\mathbf{F}_{GG}^{+}\\,
+              \\mathbf{F}_{\\theta G}^{T}\\big)^{+},
+    \\end{equation}
+
+    accounting for the finite-sample uncertainty in the magnitude estimates G.
+
+    For sufficiently large ``num_looks`` this converges to the expected-FI
+    bound from :func:`compute_crlb_jax`; at small ``num_looks`` (or at low
+    coherence) the partial expected-FI bound underestimates the actual error,
+    and the observed-FI Schur correction is the leading-order finite-sample
+    fix (Zwieback & Meyer 2022, Fig. 5).
+
+    Parameters
+    ----------
+    coherence_matrices : Array
+        Sample coherence matrices, shape ``(..., N, N)``. Hermitian, unit
+        diagonal. The off-diagonal phases of these matrices are *not* used for
+        the model phases (those are supplied in ``phase_estimates``); but the
+        full complex matrix enters the likelihood as the sufficient statistic C.
+    phase_estimates : Array
+        Phase estimates θ̂, shape ``(..., N)``, in radians, e.g. from EMI. The
+        entry at ``reference_idx`` is overridden to zero internally.
+    num_looks : float
+        Number of independent looks ``L``.
+    reference_idx : int
+        Reference epoch index. The corresponding phase is fixed at zero.
+    fim_jitter : float
+        Jitter added to the Schur-complemented FI before pseudoinversion to
+        regularize against rank deficiency.
+
+    Returns
+    -------
+    Array
+        Per-epoch standard deviation in radians, shape ``(..., N)``, with
+        ``sigma = 0`` at ``reference_idx``.
+
+    Notes
+    -----
+    Hessians are computed via JAX automatic differentiation through the full
+    Gaussian DS log-likelihood. Cost is dominated by the
+    ``M`` by ``M`` pseudoinverse on the magnitude block, where
+    ``M = N(N-1)/2``; for typical InSAR ``N`` (<= 60) this is tractable.
+
+    Improvements 2 (penalized likelihood) and 3 (constrained G via the BIR1
+    parametric model) of Zwieback & Meyer 2022 are not implemented here;
+    they require modifying the point estimator and fitting a parametric
+    structure to G respectively.
+
+    References
+    ----------
+    Zwieback, S. and Meyer, F. J. (2022). Reliable InSAR Phase History
+    Uncertainty Estimates. *IEEE Trans. Geosci. Remote Sens.* 60, 5222109.
+
+    """
+    *batch, N, _ = coherence_matrices.shape
+    assert (
+        phase_estimates.shape[-1] == N
+    ), f"phase_estimates trailing dim {phase_estimates.shape[-1]} != N={N}"
+    n_theta = N - 1
+
+    neg_loglik = _make_observed_fi_neg_loglik(N, reference_idx)
+    hess_fn = jax.hessian(neg_loglik, argnums=0)
+
+    iu_row, iu_col = jnp.triu_indices(N, k=1)
+    nonref = jnp.concatenate(
+        [jnp.arange(reference_idx), jnp.arange(reference_idx + 1, N)]
+    )
+
+    def _single(C: Array, theta_est: Array) -> Array:
+        # Magnitude estimate from the sample coherence (Zwieback Improvement 1
+        # is evaluated at the joint MLE; we use the EMI/EVD phase estimate
+        # together with |C| as the magnitude estimate, which matches the EMI
+        # working point and is the cheapest sensible choice).
+        G_est = jnp.abs(C)
+        beta_init = jnp.concatenate([theta_est[nonref], G_est[iu_row, iu_col]])
+
+        H = hess_fn(beta_init, C, num_looks)
+
+        F_tt = H[:n_theta, :n_theta]
+        F_tg = H[:n_theta, n_theta:]
+        F_gg = H[n_theta:, n_theta:]
+
+        # Schur complement of the θ block of the full observed FI
+        F_corr = F_tt - F_tg @ jnp.linalg.pinv(F_gg) @ F_tg.T
+        F_corr = F_corr + fim_jitter * jnp.eye(n_theta, dtype=F_corr.dtype)
+        K_tt = jnp.linalg.pinv(F_corr)
+
+        sigma_free = jnp.sqrt(jnp.maximum(jnp.diag(K_tt), 0.0))
+        return jnp.insert(sigma_free, reference_idx, 0.0)
+
+    # Vmap across leading batch dims by flattening then reshaping back
+    flat_C = coherence_matrices.reshape((-1, N, N))
+    flat_theta = phase_estimates.reshape((-1, N))
+    sigmas_flat = vmap(_single)(flat_C, flat_theta)
+    return sigmas_flat.reshape(*batch, N)
 
 
 def _examples(N=10, gamma0=0.6, rho=0.8):

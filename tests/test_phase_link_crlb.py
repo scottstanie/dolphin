@@ -11,6 +11,7 @@ from dolphin.phase_link.crlb import (
     compute_crlb,
     compute_crlb_jax,
     compute_lower_bound_std,
+    penalization_weight,
 )
 from dolphin.phase_link.simulate import simulate_coh, simulate_neighborhood_stack
 
@@ -186,3 +187,59 @@ def test_crlb_with_empirical_coherence(num_acq: int, neighbor_samples: int) -> N
     assert np.all(std_theoretical[1:]) > 0
     # Allow some tolerance since empirical can vary substantially from theoretical
     assert 0.1 < np.median(std_np[1:]) / np.median(std_theoretical[1:]) < 10.0
+
+
+def test_penalization_weight_sign_convention() -> None:
+    """Sanity-check the Z&M2022 eq. (13) weight: W -> 1 at high gamma, W -> 0 at low.
+
+    The published equation is ambiguous in transcription; this test pins the
+    physically correct direction so a future "fix" cannot silently flip it.
+    """
+    N = 4
+
+    # Build coherence matrices at three gamma levels, off-diagonals only.
+    def make(gamma):
+        G = gamma * jnp.ones((N, N))
+        return G.at[jnp.arange(N), jnp.arange(N)].set(1.0)
+
+    W_high = penalization_weight(make(0.9))
+    W_mid = penalization_weight(make(0.3))
+    W_low = penalization_weight(make(0.05))
+
+    # Diagonals always 1 (no penalization on autocorrelations).
+    assert np.allclose(np.diag(W_high), 1.0)
+    assert np.allclose(np.diag(W_low), 1.0)
+
+    # Off-diagonal: high gamma -> W ~ 1, low gamma -> W ~ 0.
+    off = ~np.eye(N, dtype=bool)
+    assert np.all(np.asarray(W_high)[off] > 0.95)
+    assert np.all(np.asarray(W_mid)[off] > 0.85)  # mid: only mild penalization
+    assert np.all(np.asarray(W_low)[off] < 0.05)
+
+    # Monotone in gamma (off-diagonals).
+    assert float(jnp.mean(W_high)) > float(jnp.mean(W_mid)) > float(jnp.mean(W_low))
+
+
+def test_penalization_weight_reproduces_paper_fig3_landmarks() -> None:
+    """Numerical landmarks read off Fig. 3(b) of Zwieback & Meyer 2022.
+
+    The paper plots unpenalized and penalized coherence vs. true gamma. The
+    penalized curve passes through ~0 at gamma=0 and rejoins the unpenalized
+    line by gamma ~ 0.3. Equivalently, W(0.05) << 1 and W(0.5) ~ 1.
+    """
+    for gamma, expect_low, expect_high in [
+        (0.01, 0.0, 0.01),
+        (0.05, 0.0, 0.01),
+        (0.10, 0.4, 0.7),  # transition region; bias ~halved here per paper Fig. 3(b)
+        (0.20, 0.7, 0.9),
+        (0.30, 0.9, 0.97),
+        (0.50, 0.97, 1.0),
+        (0.90, 0.99, 1.0),
+    ]:
+        N = 3
+        Gm = gamma * jnp.ones((N, N))
+        Gm = Gm.at[jnp.arange(N), jnp.arange(N)].set(1.0)
+        w = float(penalization_weight(Gm)[0, 1])
+        assert (
+            expect_low <= w <= expect_high
+        ), f"gamma={gamma}: W={w:.4f} not in [{expect_low}, {expect_high}]"

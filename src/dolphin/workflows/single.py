@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +25,7 @@ from dolphin.ps import calc_ps_block
 from dolphin.stack import MiniStackInfo
 from dolphin.utils import DummyProcessPoolExecutor, grow_nodata_region
 
+from ._profiling import StageTimer
 from .config import ShpMethod
 
 logger = logging.getLogger("dolphin")
@@ -236,6 +238,7 @@ def run_wrapped_phase_single(
     ###########################
     write_lock = Lock()
     read_lock = Lock()
+    stage_timer = StageTimer()
 
     Executor = ThreadPoolExecutor if max_workers > 1 else DummyProcessPoolExecutor
     pbar = tqdm(total=len(blocks), **tqdm_kwargs)
@@ -252,7 +255,7 @@ def run_wrapped_phase_single(
             (in_no_pad_rows, in_no_pad_cols),
             (in_trim_rows, in_trim_cols),
         ) = block
-        with read_lock:
+        with stage_timer.time("read"), read_lock:
             cur_data, _ = loader.read(in_rows, in_cols)
         if np.all(cur_data == 0) or np.isnan(cur_data).all():
             return block, None, None, None
@@ -263,35 +266,41 @@ def run_wrapped_phase_single(
         amp_stack = np.abs(cur_data) if shp_method == "ks" else None
 
         # Compute the neighbor_arrays for this block
-        neighbor_arrays = shp.estimate_neighbors(
-            halfwin_rowcol=(yhalf, xhalf),
-            alpha=shp_alpha,
-            strides=Strides(y=strides_tup[0], x=strides_tup[1]),
-            mean=amp_mean[in_rows, in_cols] if amp_mean is not None else None,
-            var=amp_variance[in_rows, in_cols] if amp_variance is not None else None,
-            nslc=shp_nslc,
-            amp_stack=amp_stack,
-            method=shp_method,
-        )
-        try:
-            pl_output = run_phase_linking(
-                cur_data,
-                half_window=half_window_tup,
-                strides=strides_tup,
-                use_evd=use_evd,
-                beta=beta,
-                zero_correlation_threshold=zero_correlation_threshold,
-                reference_idx=ministack.output_reference_idx,
-                nodata_mask=nodata_mask[in_rows, in_cols],
-                ps_mask=ps_mask[in_rows, in_cols],
-                neighbor_arrays=neighbor_arrays,
-                baseline_lag=baseline_lag,
-                avg_mag=amp_mean[in_rows, in_cols] if amp_mean is not None else None,
-                first_real_slc_idx=ministack.first_real_slc_idx,
-                compute_crlb=write_crlb,
-                nearest_n_coherence=nearest_n_coherence,
-                flatten=flatten,
+        with stage_timer.time("shp"):
+            neighbor_arrays = shp.estimate_neighbors(
+                halfwin_rowcol=(yhalf, xhalf),
+                alpha=shp_alpha,
+                strides=Strides(y=strides_tup[0], x=strides_tup[1]),
+                mean=amp_mean[in_rows, in_cols] if amp_mean is not None else None,
+                var=(
+                    amp_variance[in_rows, in_cols] if amp_variance is not None else None
+                ),
+                nslc=shp_nslc,
+                amp_stack=amp_stack,
+                method=shp_method,
             )
+        try:
+            with stage_timer.time("phase_link"):
+                pl_output = run_phase_linking(
+                    cur_data,
+                    half_window=half_window_tup,
+                    strides=strides_tup,
+                    use_evd=use_evd,
+                    beta=beta,
+                    zero_correlation_threshold=zero_correlation_threshold,
+                    reference_idx=ministack.output_reference_idx,
+                    nodata_mask=nodata_mask[in_rows, in_cols],
+                    ps_mask=ps_mask[in_rows, in_cols],
+                    neighbor_arrays=neighbor_arrays,
+                    baseline_lag=baseline_lag,
+                    avg_mag=(
+                        amp_mean[in_rows, in_cols] if amp_mean is not None else None
+                    ),
+                    first_real_slc_idx=ministack.first_real_slc_idx,
+                    compute_crlb=write_crlb,
+                    nearest_n_coherence=nearest_n_coherence,
+                    flatten=flatten,
+                )
         except PhaseLinkRuntimeError as e:
             # note: this is a warning instead of info, since it should
             # get caught at the "skip_empty" step
@@ -313,16 +322,19 @@ def run_wrapped_phase_single(
 
         # Compress the ministack using only the non-compressed SLCs
         # Get the mean to set as pixel magnitudes
-        abs_stack = np.abs(cur_data[first_real_slc_idx:, in_trim_rows, in_trim_cols])
-        cur_data_mean, cur_amp_dispersion, _ = calc_ps_block(abs_stack)
-        cur_comp_slc = compress(
-            # Get the inner portion of the full-res SLC data
-            cur_data[:, in_trim_rows, in_trim_cols],
-            pl_output.cpx_phase[:, out_trim_rows, out_trim_cols],
-            first_real_slc_idx=first_real_slc_idx,
-            slc_mean=cur_data_mean,
-            reference_idx=ministack.compressed_reference_idx,
-        )
+        with stage_timer.time("compress"):
+            abs_stack = np.abs(
+                cur_data[first_real_slc_idx:, in_trim_rows, in_trim_cols]
+            )
+            cur_data_mean, cur_amp_dispersion, _ = calc_ps_block(abs_stack)
+            cur_comp_slc = compress(
+                # Get the inner portion of the full-res SLC data
+                cur_data[:, in_trim_rows, in_trim_cols],
+                pl_output.cpx_phase[:, out_trim_rows, out_trim_cols],
+                first_real_slc_idx=first_real_slc_idx,
+                slc_mean=cur_data_mean,
+                reference_idx=ministack.compressed_reference_idx,
+            )
 
         # Save each of the MLE estimates (ignoring those corresponding to
         # compressed SLCs indexes)
@@ -330,7 +342,7 @@ def run_wrapped_phase_single(
             phase_linked_slc_files
         )
         # ### Save results ###
-        with write_lock:
+        with stage_timer.time("write_queue"), write_lock:
             # ### Save results ###
             for img, f in zip(
                 pl_output.cpx_phase[first_real_slc_idx:, out_trim_rows, out_trim_cols],
@@ -421,14 +433,25 @@ def run_wrapped_phase_single(
                 )
             pbar.update()
 
+    loop_t0 = time.perf_counter()
     with Executor(max_workers) as exc:
         # Consume all blocks from the `.map` call
         deque(exc.map(_process_block, blocks))
+    loop_wall = time.perf_counter() - loop_t0
 
     # Block until all the writers for this ministack have finished
     logger.info(f"Waiting to write {writer.num_queued} blocks of data.")
+    drain_t0 = time.perf_counter()
     writer.notify_finished()
+    drain_wall = time.perf_counter() - drain_t0
     logger.info(f"Finished ministack of size {vrt_stack.shape}.")
+    stage_timer.log_summary(
+        label=output_folder.name,
+        wall_seconds=loop_wall,
+        n_workers=max_workers,
+        n_blocks=len(blocks),
+        drain_seconds=drain_wall,
+    )
     loader.notify_finished()
 
     logger.info("Repacking phase linking outputs for more compression")

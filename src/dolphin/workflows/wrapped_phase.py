@@ -15,7 +15,7 @@ from dolphin.utils import get_nearest_date_idx
 from dolphin.workflows import UnwrapMethod
 
 from . import InterferogramNetwork, sequential
-from ._profiling import benchmark_read
+from ._profiling import log_input_read_profile
 from .config import DisplacementWorkflow
 
 logger = logging.getLogger("dolphin")
@@ -131,8 +131,8 @@ def run(
         for f, is_comp in zip(input_file_list, is_compressed, strict=False)
         if not is_comp
     ]
-    # One-shot probe of input read cost / compression to inform profiling.
-    benchmark_read(non_compressed_slcs[0], subdataset=subdataset)
+    # One-shot log of input chunking/compression to inform profiling.
+    log_input_read_profile(non_compressed_slcs[0], subdataset=subdataset)
     layover_shadow_mask = (
         cfg.layover_shadow_mask_files[0] if cfg.layover_shadow_mask_files else None
     )

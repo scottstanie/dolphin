@@ -9,6 +9,11 @@ The per-stage timers are thread-safe so they can wrap sections of
 Reads in that loop are serialized by a lock, so ``sum(read)`` is real
 wall-clock critical-path time; the compute stages overlap across workers, so
 their summed time can legitimately exceed the loop wall-clock.
+
+[`log_input_read_profile`][dolphin.workflows._profiling.log_input_read_profile]
+reports how an input granule is stored (chunking, compression). It is
+metadata-only and effectively free; actual read wall-time is measured by
+``StageTimer``.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("dolphin")
 
-__all__ = ["StageTimer", "benchmark_read"]
+__all__ = ["StageTimer", "log_input_read_profile"]
 
 
 @dataclass
@@ -114,19 +119,24 @@ class StageTimer:
         )
 
 
-def benchmark_read(
+def log_input_read_profile(
     file_path: Filename,
     *,
     subdataset: str | None = None,
-    block: tuple[int, int] = (1024, 1024),
 ) -> None:
-    """Log the read cost and compression of one input granule.
+    """Log how an input granule is stored, to explain its read cost.
 
-    Reads a ``block``-sized window from the first band of ``file_path``
-    twice. The first read pays disk I/O plus decompression; the second is
-    typically served from the OS page cache, so the cold-minus-warm gap is a
-    rough proxy for raw disk-I/O time, and the warm read for
-    decompression-plus-copy time.
+    Reports the GDAL driver, compression, on-disk block (chunk) size, raster
+    dimensions, and dtype. GDAL must read and decompress every storage block
+    overlapping a requested window, so a coarsely chunked granule inflates
+    read cost: a ``block_shape`` workflow read can touch many more bytes than
+    it returns. In the worst case (one chunk spanning the whole band) any
+    sub-window read decompresses the entire band.
+
+    This is metadata-only -- no pixels are read -- so it is effectively free.
+    Actual read wall-time is measured by the ``read`` stage of
+    [`StageTimer`][dolphin.workflows._profiling.StageTimer] inside the block
+    loop.
 
     Parameters
     ----------
@@ -134,8 +144,6 @@ def benchmark_read(
         A representative (non-compressed) input granule.
     subdataset
         HDF5/NetCDF subdataset path, if the input is an HDF5/NetCDF file.
-    block
-        ``(rows, cols)`` window size to read.
 
     """
     from osgeo import gdal
@@ -144,28 +152,22 @@ def benchmark_read(
     path = f'NETCDF:"{file_path}":{subdataset}' if subdataset else str(file_path)
     ds = gdal.Open(path)
     band = ds.GetRasterBand(1)
-    ny = min(block[0], ds.RasterYSize)
-    nx = min(block[1], ds.RasterXSize)
+    # GetBlockSize returns [x, y]; for the HDF5 driver this is the chunk size.
+    block_x, block_y = band.GetBlockSize()
     compression = band.GetMetadataItem("COMPRESSION", "IMAGE_STRUCTURE") or "NONE"
     driver = ds.GetDriver().ShortName
-
-    t0 = time.perf_counter()
-    band.ReadAsArray(0, 0, nx, ny)
-    cold_ms = 1e3 * (time.perf_counter() - t0)
-
-    t0 = time.perf_counter()
-    band.ReadAsArray(0, 0, nx, ny)
-    warm_ms = 1e3 * (time.perf_counter() - t0)
-
+    dtype = gdal.GetDataTypeName(band.DataType)
+    nx, ny = ds.RasterXSize, ds.RasterYSize
     ds = None  # release GDAL handle
     logger.info(
-        "[read-benchmark] %s: driver=%s compression=%s block=%dx%d "
-        "cold=%.0fms warm=%.0fms (cold-warm ~= disk I/O, warm ~= decompress+copy)",
+        "[read-profile] %s: driver=%s dtype=%s size=%dx%d block=%dx%d "
+        "compression=%s (sizes are rows x cols)",
         file_path,
         driver,
-        compression,
+        dtype,
         ny,
         nx,
-        cold_ms,
-        warm_ms,
+        block_y,
+        block_x,
+        compression,
     )

@@ -9,7 +9,7 @@ from dolphin._show_versions import (
 
 
 @pytest.mark.parametrize(
-    "unwrapper", ["snaphu", "spurt", "isce3", "tophu", "whirlwind"]
+    "unwrapper", ["snaphu", "spurt", "isce3", "tophu", "whirlwind_rs"]
 )
 def test_get_version_unwrapper(unwrapper):
     _get_version(unwrapper)

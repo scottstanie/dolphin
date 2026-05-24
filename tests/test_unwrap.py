@@ -3,8 +3,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import scipy
-from packaging import version
 
 import dolphin.unwrap
 from dolphin import io
@@ -12,12 +10,8 @@ from dolphin.workflows import SpurtOptions, TophuOptions, UnwrapMethod, UnwrapOp
 
 TOPHU_INSTALLED = importlib.util.find_spec("tophu") is not None
 SPURT_INSTALLED = importlib.util.find_spec("spurt") is not None
-WHIRLWIND_INSTALLED = importlib.util.find_spec("whirlwind") is not None
+WHIRLWIND_INSTALLED = importlib.util.find_spec("whirlwind_rs") is not None
 SPURS_INSTALLED = importlib.util.find_spec("spurs") is not None
-
-if version.parse(scipy.__version__) >= version.parse("1.15.0"):
-    # XXX: The current whirlwind implementation breaks for recent scipy
-    WHIRLWIND_INSTALLED = False
 
 
 # Dataset has no geotransform, gcps, or rpcs. The identity matrix will be returned.
@@ -344,7 +338,9 @@ class TestSpurt:
         # assert all(p.exists() for p in conncomp_paths)
 
 
-@pytest.mark.skipif(not WHIRLWIND_INSTALLED, reason="whirlwind package not installed")
+@pytest.mark.skipif(
+    not WHIRLWIND_INSTALLED, reason="whirlwind_rs package not installed"
+)
 class TestWhirlwind:
     def test_unwrap_whirlwind(self, tmp_path, raster_100_by_200, corr_raster):
         unw_filename = tmp_path / "whirlwind-unwrapped.unw.tif"

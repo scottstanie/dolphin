@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 
@@ -31,9 +31,10 @@ def unwrap_whirlwind(
     zero_where_masked: bool = False,
     unw_nodata: Optional[float] = DEFAULT_UNW_NODATA,
     ccl_nodata: Optional[int] = DEFAULT_CCL_NODATA,
+    conncomp_grow_cost: Literal["defo", "smooth"] = "smooth",
     scratchdir: Optional[Filename] = None,
 ) -> tuple[Path, Path]:
-    """Unwrap an interferogram using `whirlwind`.
+    """Unwrap an interferogram using `whirlwind-rs`.
 
     Parameters
     ----------
@@ -50,13 +51,15 @@ def unwrap_whirlwind(
         Assumes that 1s are valid pixels and 0s are invalid.
     zero_where_masked : bool, optional
         Set wrapped phase/correlation to 0 where mask is 0 before unwrapping.
-        If not mask is provided, this is ignored.
-        By default True.
+        If no mask is provided, this is ignored.
+        By default False.
     unw_nodata : float, optional
-        If providing `unwrap_callback`, provide the nodata value for your
-        unwrapping function.
-    ccl_nodata : float, optional
+        Nodata value for the output unwrapped phase raster.
+    ccl_nodata : int, optional
         Nodata value for the connected component labels.
+    conncomp_grow_cost : {"defo", "smooth"}, optional
+        SNAPHU cost mode used to grow connected component labels after
+        unwrapping. By default "smooth".
     scratchdir : Filename, optional
         If provided, uses a scratch directory to save the intermediate files
         during unwrapping.
@@ -70,7 +73,7 @@ def unwrap_whirlwind(
 
     """
     import snaphu
-    import whirlwind as ww
+    import whirlwind_rs as ww
 
     # Create a context manager that combines other context managers -- one for each
     # input raster file. Upon exiting the context block, each context manager in the
@@ -92,11 +95,13 @@ def unwrap_whirlwind(
         else:
             mask = stack.enter_context(snaphu.io.Raster(mask_file))
 
-        logger.info("Unwrapping using whirlwind")
-        # FIXME: Ad hoc kludge to prevent NaN's in whirlwind cost computation.
-        # Remove this when the issue is fixed upstream.
-        nlooks = np.clip(nlooks / 2, 1.0, 20.0)
-        unw = ww.unwrap(igram, corr, nlooks, mask=mask)
+        logger.info("Unwrapping using whirlwind-rs")
+        igram_arr = np.ascontiguousarray(igram[:, :], dtype=np.complex64)
+        corr_arr = np.ascontiguousarray(corr[:, :], dtype=np.float32)
+        mask_arr = (
+            np.ascontiguousarray(mask[:, :], dtype=bool) if mask is not None else None
+        )
+        unw = ww.unwrap(igram_arr, corr_arr, float(nlooks), mask=mask_arr)
 
         logger.info("Writing unwrapped phase to raster file")
         with snaphu.io.Raster.create(
@@ -111,8 +116,8 @@ def unwrap_whirlwind(
         unw_suffix = full_suffix(unw_filename)
         cc_filename = str(unw_filename).replace(unw_suffix, CONNCOMP_SUFFIX)
 
-        # XXX Whirlwind does not yet provide connected components. Instead, grow
-        # connected components using SNAPHU's 'SMOOTH' cost function for now.
+        # whirlwind-rs does not produce connected components; grow them from the
+        # unwrapped phase using SNAPHU.
         logger.info("Growing connected component labels using SNAPHU")
         with snaphu.io.Raster.create(
             cc_filename,
@@ -126,7 +131,7 @@ def unwrap_whirlwind(
                 corr=corr,
                 nlooks=nlooks,
                 mask=mask,
-                cost="smooth",
+                cost=conncomp_grow_cost,
                 scratchdir=scratchdir,
                 conncomp=conncomp,
             )

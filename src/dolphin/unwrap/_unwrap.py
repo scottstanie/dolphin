@@ -442,6 +442,7 @@ def unwrap(
             scratchdir=scratchdir,
         )
     elif unwrap_method == UnwrapMethod.WHIRLWIND:
+        whirlwind_opts = unwrap_options.whirlwind_options
         unw_path, conncomp_path = unwrap_whirlwind(
             unwrapper_ifg_filename,
             corr_filename,
@@ -451,6 +452,7 @@ def unwrap(
             zero_where_masked=unwrap_options.zero_where_masked,
             unw_nodata=unw_nodata,
             ccl_nodata=ccl_nodata,
+            conncomp_grow_cost=whirlwind_opts.conncomp_grow_cost,
             scratchdir=scratchdir,
         )
     elif unwrap_method == UnwrapMethod.SPURS:

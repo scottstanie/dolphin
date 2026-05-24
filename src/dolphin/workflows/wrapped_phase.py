@@ -194,15 +194,24 @@ def run(
     else:
         new_compressed_slc_reference_idx = None
 
-    phase_linked_slcs = sorted(pl_path.glob("2*.tif"))
+    # Pick up either GeoTIFFs (default) or the VRT shims that GeoZarr mode
+    # emits next to (and instead of) per-layer tifs. Both extensions look
+    # like normal rasters to GDAL.
+    phase_linked_slcs = sorted(pl_path.glob("2*.slc.tif")) or sorted(
+        pl_path.glob("2*.slc.vrt")
+    )
     if len(phase_linked_slcs) > 0:
         logger.info(f"Skipping EVD step, {len(phase_linked_slcs)} files already exist")
         comp_slc_list = sorted(pl_path.glob("compressed*tif"))
         temp_coh_files = sorted(pl_path.glob("temporal_coherence*tif"))
         shp_count_files = sorted(pl_path.glob("shp_count*tif"))
         similarity_files = sorted(pl_path.glob("*similarity*tif"))
-        crlb_files = sorted(pl_path.rglob("crlb*tif"))
-        closure_phase_files = sorted(pl_path.rglob("closure_phase*tif"))
+        crlb_files = sorted(pl_path.rglob("crlb*tif")) or sorted(
+            pl_path.rglob("crlb*vrt")
+        )
+        closure_phase_files = sorted(pl_path.rglob("closure_phase*tif")) or sorted(
+            pl_path.rglob("closure_phase*vrt")
+        )
     else:
         logger.info(f"Running sequential EMI step in {pl_path}")
         kwargs = tqdm_kwargs | {"desc": f"Phase linking ({pl_path})"}

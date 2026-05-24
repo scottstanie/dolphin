@@ -368,11 +368,12 @@ class OutputOptions(BaseModel, extra="forbid"):
         description=(
             "Container format for per-ministack phase-linking outputs (phase-linked"
             " SLCs, CRLB, closure phases). `geotiff` writes one file per layer."
-            " `geozarr` additionally writes a 3D `cube.zarr` per ministack as the"
-            " native target of the parallel block loop, then exports per-date"
-            " GeoTIFFs from the cube so stitching / unwrap / timeseries (which"
-            " remain tif-based) keep working. Stitched, unwrapped, and timeseries"
-            " outputs are always GeoTIFFs regardless of this setting."
+            " `geozarr` writes a single 3D `cube.zarr` per ministack and emits a"
+            " thin `.vrt` shim per layer that points back into the cube via the"
+            " GDAL ZARR driver, so downstream stitching / unwrap / timeseries"
+            " read the cube layers as if they were ordinary 2D rasters without"
+            " any pixel-data duplication. Stitched, unwrapped, and timeseries"
+            " outputs themselves are always GeoTIFFs regardless of this setting."
         ),
     )
     hdf5_creation_options: dict = Field(

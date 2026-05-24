@@ -51,9 +51,11 @@ def test_sequential_geozarr(tmp_path, slc_file_list):
     """Single-ministack run with GeoZarr output.
 
     Asserts that:
-    - a ``cube.zarr`` is produced with the expected per-kind variables
-    - per-date GeoTIFFs are still written (for downstream stitching) and
-      their pixel values match the corresponding cube layer
+    - a ``cube.zarr`` is produced with the expected per-kind 3D variables
+    - one ``.slc.vrt`` is emitted per date (pointing into the cube)
+    - no per-date ``.slc.tif`` files are written (no data duplication)
+    - reading the VRT via GDAL/rasterio returns the same pixel data as
+      the corresponding cube layer
     """
     pytest.importorskip("zarr")
     import zarr
@@ -88,18 +90,22 @@ def test_sequential_geozarr(tmp_path, slc_file_list):
     # Coord scaffolding required by GeoZarr / rioxarray readers.
     assert {"y", "x", "spatial_ref"}.issubset(set(root.keys()))
     # One 3D array per kind.
-    assert "slcs" in root
+    assert "slcs" in root and root["slcs"].ndim == 3
     assert root["slcs"].shape[0] == 3  # 3 input dates
     assert "crlb" in root
     assert "closure_phases" in root
     assert root["closure_phases"].shape[0] == 1  # N-2 triplets for N=3
 
-    # Per-layer tifs were exported for downstream consumers.
+    # No tif duplication: VRTs are the new per-layer artifacts.
     slc_tifs = sorted(output_folder.glob("2*.slc.tif"))
-    assert len(slc_tifs) == 3
+    slc_vrts = sorted(output_folder.glob("2*.slc.vrt"))
+    assert slc_tifs == [], (
+        f"Per-date GeoTIFFs were written in GEOZARR mode (duplication): {slc_tifs}"
+    )
+    assert len(slc_vrts) == 3
 
-    # Cube layer i and tif i should contain identical pixel data.
-    for i, tif in enumerate(slc_tifs):
+    # Reading the VRT through GDAL must yield the same data as the cube layer.
+    for i, vrt in enumerate(slc_vrts):
         cube_layer = np.asarray(root["slcs"][i])
-        tif_data = load_gdal(tif)
-        np.testing.assert_array_equal(cube_layer, tif_data)
+        vrt_data = load_gdal(vrt)
+        np.testing.assert_array_equal(cube_layer, vrt_data)

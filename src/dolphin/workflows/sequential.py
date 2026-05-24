@@ -232,14 +232,23 @@ def run_wrapped_phase_sequential(
 def _get_outputs_from_folder(
     output_folder: Path,
 ) -> tuple[list[Path], list[Path], list[Path], Path, Path, Path, Path]:
-    cur_output_files = sorted(output_folder.glob("2*.slc.tif"))
+    # GeoZarr mode emits per-layer VRTs (pointing into a cube.zarr) instead
+    # of per-layer GeoTIFFs. Pick up whichever the writer produced for this
+    # ministack; both look like normal 2D rasters to GDAL downstream.
+    cur_output_files = sorted(output_folder.glob("2*.slc.tif")) or sorted(
+        output_folder.glob("2*.slc.vrt")
+    )
 
     cur_comp_slc_file = next(output_folder.glob("compressed_*"))
     temp_coh_file = next(output_folder.glob("temporal_coherence_*"))
     similarity_file = next(output_folder.glob("similarity*"))
     shp_count_file = next(output_folder.glob("shp_counts_*"))
-    crlb_files = sorted(output_folder.glob("crlb/crlb*tif"))
-    closure_phase_files = sorted(output_folder.glob("closure_phases/closure_phase*tif"))
+    crlb_files = sorted(output_folder.glob("crlb/crlb*tif")) or sorted(
+        output_folder.glob("crlb/crlb*vrt")
+    )
+    closure_phase_files = sorted(
+        output_folder.glob("closure_phases/closure_phase*tif")
+    ) or sorted(output_folder.glob("closure_phases/closure_phase*vrt"))
 
     return (
         cur_output_files,

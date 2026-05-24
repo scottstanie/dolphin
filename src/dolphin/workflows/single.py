@@ -401,19 +401,26 @@ def run_wrapped_phase_single(
     logger.info(f"Finished ministack of size {vrt_stack.shape}.")
     loader.notify_finished()
 
-    # GEOZARR: derive per-layer tifs from the cube so downstream consumers
-    # (interferogram formation, stitching, unwrap) keep working. Cube remains
-    # the canonical artifact for visualizers.
+    # GEOZARR: emit thin VRTs that expose each cube layer as a 2D raster
+    # so the rest of the tif-based pipeline keeps working with no data
+    # duplication. (For GEOTIFF mode this is a no-op.)
     if output_format == OutputFormat.GEOZARR:
-        logger.info("Exporting per-layer GeoTIFFs from GeoZarr cube")
+        logger.info("Emitting per-layer VRT shims pointing into GeoZarr cube")
         slc_stack.export_tifs(like_filename=like_filename)
         if crlb_stack is not None:
             crlb_stack.export_tifs(like_filename=like_filename)
         if closure_stack is not None:
             closure_stack.export_tifs(like_filename=like_filename)
 
-    logger.info("Repacking phase linking outputs for more compression")
-    io.repack_rasters(phase_linked_slc_files, keep_bits=12)
+    # ``repack_rasters`` is a GeoTIFF-only post-pass that re-tiles + tightens
+    # compression on the per-layer tifs. The zarr cube is already chunked
+    # and compressed at write time (and the writer's ``keep_bits`` knob
+    # already applied the mantissa truncation), so we skip it in GEOZARR
+    # mode — repack would create one tif per VRT, undoing the no-duplication
+    # win.
+    if output_format == OutputFormat.GEOTIFF:
+        logger.info("Repacking phase linking outputs for more compression")
+        io.repack_rasters(phase_linked_slc_files, keep_bits=12)
 
     logger.info("Creating similarity raster on outputs")
     similarity.create_similarities(
@@ -425,13 +432,14 @@ def run_wrapped_phase_single(
         block_shape=block_shape,
     )
 
-    if write_crlb:
-        logger.info("Repacking CRLB files for more compression")
-        # CRLB needs only low precision output
-        io.repack_rasters(phase_linked_crlb_files, use_16_bits=True)
-    if write_closure_phase:
-        logger.info("Repacking closure phase files for more compression")
-        io.repack_rasters(closure_phase_files, keep_bits=10)
+    if output_format == OutputFormat.GEOTIFF:
+        if write_crlb:
+            logger.info("Repacking CRLB files for more compression")
+            # CRLB needs only low precision output
+            io.repack_rasters(phase_linked_crlb_files, use_16_bits=True)
+        if write_closure_phase:
+            logger.info("Repacking closure phase files for more compression")
+            io.repack_rasters(closure_phase_files, keep_bits=10)
 
     written_comp_slc = output_files["compressed_slc"]
     ccslc_info = ministack.get_compressed_slc_info()
@@ -630,22 +638,24 @@ def setup_output_folder(
 # Layer-stack outputs: one writer per "kind" of per-date layer.
 #
 # Both implementations expose the same minimal interface:
-#   .files      -> list[Path] for downstream consumers (interferogram formation,
-#                  stitching, ...) that still expect per-layer GeoTIFFs.
+#   .files      -> list[Path] handed to downstream consumers
+#                  (interferogram formation, stitching, ...) — GeoTIFFs for
+#                  the tif backend, VRT shims for the GeoZarr backend.
 #   .n_layers   -> int
 #   .write_layer(layer_idx, data, row_start, col_start)
 #   .close()
-#   .export_tifs(like_filename) -> populate .files from a finished cube (no-op
-#                                   for the GeoTIFF impl).
+#   .export_tifs(like_filename) -> finalise the ``.files`` for this stack.
+#                                   No-op for GeoTIFF; emits per-layer VRTs
+#                                   for GeoZarr.
 #
 # When ``output_format=GEOZARR``, the parallel block loop writes natively
-# into a single ``cube.zarr`` per ministack (the "natural 3D parallel
-# write" — no per-block tif writes during the loop). Then ``export_tifs``
-# runs once at the end to materialize per-date GeoTIFFs into the same
-# paths the GeoTIFF format would have produced. Stitching, unwrap, and
-# timeseries downstream of ``single.py`` are tif-based and consume those
-# exported tifs unchanged; the cube is an additional artifact (consumable
-# by rioxarray / bowser / geozarr-toolkit) rather than a replacement.
+# into a single ``cube.zarr`` per ministack (no per-block tif writes during
+# the loop). Once the cube is closed, ``export_tifs`` writes one tiny VRT
+# per layer; each VRT carries the same shape/SRS/geotransform and points
+# at ``ZARR:cube.zarr:/<variable>:i`` as its source. GDAL/rasterio open the
+# VRT and pull pixels from the cube on demand, so the existing tif-based
+# downstream pipeline (interferogram formation, stitching, unwrap,
+# timeseries) sees normal 2D rasters without any data being copied.
 # ----------------------------------------------------------------------
 
 
@@ -691,7 +701,14 @@ class _TiffLayerStack(_LayerStackOutput):
 
 
 class _ZarrLayerStack(_LayerStackOutput):
-    """3D ``(n_layers, y, x)`` cube inside a shared GeoZarr store."""
+    """3D ``(n_layers, y, x)`` cube inside a shared GeoZarr store.
+
+    Downstream consumers (interferogram formation, stitching, ...) read the
+    cube layers through one VRT shim per layer rather than through
+    duplicated tif data. Each VRT is a few-hundred-byte XML file pointing
+    at ``ZARR:cube.zarr:/<variable>:i`` and exposes that layer to GDAL as
+    a normal 2D raster.
+    """
 
     def __init__(
         self,
@@ -704,23 +721,31 @@ class _ZarrLayerStack(_LayerStackOutput):
         strides: dict[str, int],
         keep_bits: int | None,
     ):
-        from dolphin.io._geozarr import BackgroundGeoZarrStackWriter
+        from dolphin.io._geozarr import (
+            BackgroundGeoZarrStackWriter,
+            layer_vrt_path,
+        )
 
         self.store_path = store_path
         self.name = name
         self.n_layers = n_layers
-        # ``files`` is populated only after ``export_tifs`` runs, but we keep
-        # the planned paths around so downstream callers can know where the
-        # tifs will land.
-        self._planned_paths = list(tif_paths)
-        self.files = list(tif_paths)
         self._dtype = np.dtype(dtype)
         self._strides = strides
         self._keep_bits = keep_bits
 
-        # Build a strided "like" raster for output shape/transform when strides
-        # aren't trivial. The block loop emits data at strided resolution.
+        # Per-layer "files" presented to downstream code are VRT shims at
+        # the same stem as the planned tif paths; downstream globs that
+        # expanded to ``2*.slc.tif`` now match ``2*.slc.vrt`` instead.
+        self._vrt_paths = [layer_vrt_path(p) for p in tif_paths]
+        self.files = list(self._vrt_paths)
+
+        # Strided "like" geo for the output cube. The block loop emits
+        # data at strided resolution (e.g. multi-look output).
         h_out, w_out, gt_out, crs_wkt = _strided_geo(like_filename, strides)
+        self._out_height = h_out
+        self._out_width = w_out
+        self._geotransform = gt_out
+        self._crs_wkt = crs_wkt
 
         self._writer = BackgroundGeoZarrStackWriter(
             store_path=store_path,
@@ -742,26 +767,20 @@ class _ZarrLayerStack(_LayerStackOutput):
     def close(self) -> None:
         self._writer.close()
 
-    def export_tifs(self, like_filename: Filename) -> None:
-        """Dump each layer of the cube to its planned GeoTIFF path."""
-        import zarr
+    def export_tifs(self, like_filename: Filename) -> None:  # noqa: ARG002
+        """Emit one VRT per cube layer; no pixel data is copied."""
+        from dolphin.io._geozarr import emit_layer_vrts
 
-        root = zarr.open_group(str(self.store_path), mode="r")
-        arr = root[self.name]
-        for idx, path in enumerate(self._planned_paths):
-            path.parent.mkdir(exist_ok=True, parents=True)
-            io.write_arr(
-                arr=None,
-                like_filename=like_filename,
-                output_name=path,
-                dtype=self._dtype,
-                strides=self._strides,
-            )
-            # Read whole 2D layer into memory and write it. These are
-            # ministack-sized blocks, which already fit in RAM in the main
-            # block loop above.
-            layer = np.asarray(arr[idx])
-            io.write_block(layer, path, row_start=0, col_start=0)
+        emit_layer_vrts(
+            store_path=self.store_path,
+            variable=self.name,
+            layer_paths=self._vrt_paths,
+            height=self._out_height,
+            width=self._out_width,
+            dtype=self._dtype,
+            crs_wkt=self._crs_wkt,
+            geotransform=self._geotransform,
+        )
 
 
 def _strided_geo(

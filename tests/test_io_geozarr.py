@@ -6,8 +6,11 @@ is not installed.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
+import rasterio
 
 zarr = pytest.importorskip("zarr")
 
@@ -16,6 +19,9 @@ from dolphin.io._geozarr import (  # noqa: E402
     GeoZarrStackWriter,
     GeoZarrWriter,
     create_geozarr_skeleton,
+    emit_layer_vrts,
+    layer_vrt_path,
+    zarr_subdataset_uri,
 )
 
 
@@ -209,3 +215,147 @@ def test_keep_bits_rounding(store_path, geo):
     # not by more than a small fraction.
     assert np.abs(got - expected).max() > 0
     np.testing.assert_allclose(got, expected, atol=1e-2)
+
+
+def test_default_zarr_format_is_v2(store_path, geo):
+    """Default must stay on v2 — that's what GDAL's ZARR driver reads."""
+    h, w, crs_wkt, gt = geo
+    create_geozarr_skeleton(
+        store_path, height=h, width=w, crs_wkt=crs_wkt, geotransform=gt
+    )
+    # Zarr v2 stores have an ``.zgroup`` metadata file at the root;
+    # v3 stores have ``zarr.json``.
+    assert (Path(store_path) / ".zgroup").exists()
+
+
+def test_reserved_coord_name_rejected(store_path, geo):
+    """Using ``x``/``y``/``spatial_ref`` as a variable would silently corrupt."""
+    h, w, crs_wkt, gt = geo
+    for bad in ("x", "y", "spatial_ref"):
+        with pytest.raises(ValueError, match="reserved"):
+            GeoZarrStackWriter(
+                store_path,
+                name=bad,
+                n_layers=2,
+                shape=(h, w),
+                dtype=np.float32,
+                crs_wkt=crs_wkt,
+                geotransform=gt,
+            )
+
+
+def test_existing_array_shape_mismatch_rejected(store_path, geo):
+    h, w, crs_wkt, gt = geo
+    GeoZarrStackWriter(
+        store_path,
+        name="slcs",
+        n_layers=3,
+        shape=(h, w),
+        dtype=np.float32,
+        crs_wkt=crs_wkt,
+        geotransform=gt,
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        GeoZarrStackWriter(
+            store_path,
+            name="slcs",
+            n_layers=5,  # mismatched layer count
+            shape=(h, w),
+            dtype=np.float32,
+            crs_wkt=crs_wkt,
+            geotransform=gt,
+        )
+
+
+def test_vrt_path_helper(tmp_path):
+    """`.tif` suffix is replaced; other suffixes get `.vrt` appended."""
+    assert layer_vrt_path(tmp_path / "a.slc.tif") == tmp_path / "a.slc.vrt"
+    assert layer_vrt_path(tmp_path / "crlb.float32") == tmp_path / "crlb.float32.vrt"
+
+
+def test_zarr_subdataset_uri():
+    uri = zarr_subdataset_uri("/tmp/cube.zarr", "slcs", 2)
+    # Absolute path resolution + GDAL ZARR connection string shape.
+    assert uri.startswith('ZARR:"/')
+    assert uri.endswith(':/slcs:2')
+
+
+def test_emit_layer_vrts_readable_via_rasterio(store_path, geo):
+    """The whole point: cube layer is readable through the VRT shim with no
+    data duplication, and pixel values round-trip exactly.
+    """
+    h, w, crs_wkt, gt = geo
+    n_layers = 3
+    writer = GeoZarrStackWriter(
+        store_path,
+        name="slcs",
+        n_layers=n_layers,
+        shape=(h, w),
+        dtype=np.float32,
+        crs_wkt=crs_wkt,
+        geotransform=gt,
+    )
+    expected = {}
+    for i in range(n_layers):
+        arr = np.full((h, w), float(i + 1), dtype=np.float32)
+        writer.write_block(arr, row_start=0, col_start=0, layer=i)
+        expected[i] = arr
+
+    vrt_paths = [Path(store_path).parent / f"layer_{i}.vrt" for i in range(n_layers)]
+    out_paths = emit_layer_vrts(
+        store_path=store_path,
+        variable="slcs",
+        layer_paths=vrt_paths,
+        height=h,
+        width=w,
+        dtype=np.float32,
+        crs_wkt=crs_wkt,
+        geotransform=gt,
+    )
+    assert all(p.exists() for p in out_paths)
+    # VRTs are tiny — far smaller than copying out the layer would be.
+    for p in out_paths:
+        assert p.stat().st_size < 2048
+
+    for i, p in enumerate(out_paths):
+        with rasterio.open(p) as ds:
+            assert ds.shape == (h, w)
+            assert ds.crs is not None
+            np.testing.assert_array_equal(ds.read(1), expected[i])
+
+
+def test_emit_layer_vrts_survives_move(store_path, geo, tmp_path):
+    """Sequential.py moves outputs from per-ministack to top-level — VRTs
+    must keep pointing at the cube via absolute path after the move.
+    """
+    h, w, crs_wkt, gt = geo
+    writer = GeoZarrStackWriter(
+        store_path,
+        name="slcs",
+        n_layers=2,
+        shape=(h, w),
+        dtype=np.float32,
+        crs_wkt=crs_wkt,
+        geotransform=gt,
+    )
+    writer.write_block(
+        np.full((h, w), 9.0, dtype=np.float32), row_start=0, col_start=0, layer=0
+    )
+
+    src = tmp_path / "src.vrt"
+    emit_layer_vrts(
+        store_path=store_path,
+        variable="slcs",
+        layer_paths=[src],
+        height=h,
+        width=w,
+        dtype=np.float32,
+        crs_wkt=crs_wkt,
+        geotransform=gt,
+    )
+    moved = tmp_path / "elsewhere" / "moved.vrt"
+    moved.parent.mkdir()
+    src.rename(moved)
+
+    with rasterio.open(moved) as ds:
+        assert ds.read(1)[0, 0] == 9.0

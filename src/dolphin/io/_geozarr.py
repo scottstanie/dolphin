@@ -15,6 +15,13 @@ GeoZarr-aware tools (rioxarray, geozarr-toolkit, bowser):
 - ``grid_mapping = "spatial_ref"`` on each data array (CF convention)
 - root ``proj:wkt2`` attribute so non-rioxarray readers can find the CRS
 
+By default the store is written in **zarr v2** format. This is the version
+GDAL's ``ZARR`` driver (3.10+) reads transparently via the
+``ZARR:"path/cube.zarr":/var:i`` subdataset syntax, which lets rasterio /
+GDAL-based downstream code consume cube layers as if they were ordinary 2D
+rasters — no tif export required. Pass ``zarr_format=3`` to opt into the
+newer spec at the cost of dropping GDAL-side read compatibility.
+
 This module imports ``zarr`` lazily; ``import dolphin.io._geozarr`` does not
 itself require zarr. The optional extra ``dolphin[geozarr]`` pulls in the
 runtime stack (zarr, xarray, rioxarray).
@@ -43,12 +50,21 @@ __all__ = [
     "GeoZarrStackWriter",
     "GeoZarrWriter",
     "create_geozarr_skeleton",
+    "emit_layer_vrts",
+    "layer_vrt_path",
+    "zarr_subdataset_uri",
 ]
 
 GEOZARR_EXTRAS_ERROR = (
     "GeoZarr output requires the `geozarr` extra. Install with"
     " `pip install dolphin[geozarr]` (pulls in zarr, xarray, rioxarray)."
 )
+# Zarr v2 is the on-disk format GDAL's ZARR driver supports best as of
+# GDAL 3.10 (the ``bytes`` codec required by v3 isn't implemented on the
+# read side until later). Stick with v2 by default so downstream GDAL /
+# rasterio consumers can open ``ZARR:cube.zarr:/slcs:i`` directly without
+# any tif materialization.
+DEFAULT_ZARR_FORMAT = 2
 
 
 def _import_zarr():
@@ -107,6 +123,7 @@ def create_geozarr_skeleton(
     geotransform: Sequence[float],
     group: str | None = None,
     mode: str = "a",
+    zarr_format: int = DEFAULT_ZARR_FORMAT,
 ) -> None:
     """Initialise a zarr store with ``y``/``x``/``spatial_ref`` coordinates.
 
@@ -128,12 +145,18 @@ def create_geozarr_skeleton(
         Sub-group within the store to write to. ``None`` writes at the root.
     mode : str
         Mode for opening the store: ``"w"`` overwrites, ``"a"`` appends.
+    zarr_format : int
+        Zarr spec version, 2 or 3. Defaults to 2 because GDAL's ZARR driver
+        reads v2 cleanly; v3 read support depends on having a recent enough
+        GDAL build.
 
     """
     zarr = _import_zarr()
 
     y, x = _pixel_center_coords(height, width, geotransform)
-    root = zarr.open_group(str(store_path), mode=mode, path=group)
+    root = zarr.open_group(
+        str(store_path), mode=mode, path=group, zarr_format=zarr_format
+    )
 
     # Write coord arrays only if they don't already exist (idempotent).
     if "y" not in root:
@@ -155,6 +178,9 @@ def create_geozarr_skeleton(
         root.attrs["proj:wkt2"] = crs_wkt
 
 
+_RESERVED_COORD_NAMES = frozenset({"x", "y", "spatial_ref"})
+
+
 def _ensure_data_array(
     store_path: Filename,
     *,
@@ -166,13 +192,33 @@ def _ensure_data_array(
     fill_value: float | None,
     extra_dim_names: Sequence[str] = (),
     group: str | None = None,
+    zarr_format: int = DEFAULT_ZARR_FORMAT,
 ):
     """Create-or-open one data array inside the store and stamp CF attrs."""
+    if name in _RESERVED_COORD_NAMES:
+        # Quietly returning the existing 1-D coord array would silently
+        # corrupt cube writes (the 3-D set would land in a 1-D coordinate),
+        # so reject these names up front.
+        msg = (
+            f"{name!r} is reserved for the spatial coordinate scaffold and"
+            " cannot be used as a data variable name."
+        )
+        raise ValueError(msg)
+
     zarr = _import_zarr()
-    root = zarr.open_group(str(store_path), mode="a", path=group)
+    root = zarr.open_group(
+        str(store_path), mode="a", path=group, zarr_format=zarr_format
+    )
 
     if name in root:
-        return root[name]
+        existing = root[name]
+        if tuple(existing.shape) != tuple(shape):
+            msg = (
+                f"Array {name!r} already exists in {store_path} with shape"
+                f" {tuple(existing.shape)}; requested shape {tuple(shape)}."
+            )
+            raise ValueError(msg)
+        return existing
 
     create_kwargs: dict[str, Any] = {
         "name": name,
@@ -181,7 +227,8 @@ def _ensure_data_array(
     }
     if chunks is not None:
         create_kwargs["chunks"] = chunks
-    if shards is not None:
+    # Sharding is a v3-only feature; silently drop on v2 stores.
+    if shards is not None and zarr_format >= 3:
         create_kwargs["shards"] = shards
     if fill_value is not None:
         create_kwargs["fill_value"] = fill_value
@@ -251,6 +298,7 @@ class GeoZarrWriter(DatasetWriter):
         fill_value: float | None = None,
         keep_bits: int | None = None,
         group: str | None = None,
+        zarr_format: int = DEFAULT_ZARR_FORMAT,
     ):
         if like_filename is not None:
             h, w, crs_wkt, gt = _read_geo_metadata(like_filename)
@@ -268,11 +316,13 @@ class GeoZarrWriter(DatasetWriter):
                 crs_wkt=crs_wkt,
                 geotransform=gt,
                 group=group,
+                zarr_format=zarr_format,
             )
 
         self.store_path = Path(store_path)
         self.name = name
         self.group = group
+        self.zarr_format = zarr_format
         self.keep_bits = keep_bits
         self._shape = tuple(shape)
         self._dtype = np.dtype(dtype)
@@ -290,6 +340,7 @@ class GeoZarrWriter(DatasetWriter):
             shards=shards,
             fill_value=fill_value,
             group=group,
+            zarr_format=zarr_format,
         )
 
     @property
@@ -368,6 +419,7 @@ class GeoZarrStackWriter(DatasetStackWriter):
         layer_coord_name: str | None = None,
         layer_coord: ArrayLike | None = None,
         group: str | None = None,
+        zarr_format: int = DEFAULT_ZARR_FORMAT,
     ):
         if like_filename is not None:
             h, w, src_crs, src_gt = _read_geo_metadata(like_filename)
@@ -397,11 +449,15 @@ class GeoZarrStackWriter(DatasetStackWriter):
             crs_wkt=crs_wkt,
             geotransform=geotransform,
             group=group,
+            zarr_format=zarr_format,
         )
 
         self.store_path = Path(store_path)
         self.name = name
         self.group = group
+        self.zarr_format = zarr_format
+        self.crs_wkt = crs_wkt
+        self.geotransform = tuple(geotransform)
         self.keep_bits = keep_bits
         self._dtype = np.dtype(dtype)
         self._shape: tuple[int, ...] = (n_layers, shape[0], shape[1])
@@ -420,6 +476,7 @@ class GeoZarrStackWriter(DatasetStackWriter):
             fill_value=fill_value,
             extra_dim_names=(layer_dim_name,),
             group=group,
+            zarr_format=zarr_format,
         )
 
         if layer_coord is not None and layer_coord_name is not None:
@@ -434,7 +491,12 @@ class GeoZarrStackWriter(DatasetStackWriter):
                 f" {self._shape[0]}"
             )
             raise ValueError(msg)
-        root = zarr.open_group(str(self.store_path), mode="a", path=self.group)
+        root = zarr.open_group(
+            str(self.store_path),
+            mode="a",
+            path=self.group,
+            zarr_format=self.zarr_format,
+        )
         if coord_name in root:
             return
 
@@ -580,3 +642,151 @@ class BackgroundGeoZarrStackWriter(BackgroundWriter, DatasetStackWriter):
     def close(self) -> None:
         """Drain the background queue and release the writer."""
         self.notify_finished()
+
+
+# ----------------------------------------------------------------------
+# VRT shims: thin XML files that expose a single 2D layer of a cube as
+# an ordinary GDAL-readable raster. This is how the rest of the
+# tif-based pipeline (interferogram formation, stitching, unwrap)
+# consumes GeoZarr outputs without any code changes: a downstream caller
+# opens the .vrt with rasterio/GDAL, and GDAL's ZARR driver pulls the
+# actual pixel data from the cube on demand. No data is duplicated.
+# ----------------------------------------------------------------------
+
+_VRT_TEMPLATE = """\
+<VRTDataset rasterXSize="{xsize}" rasterYSize="{ysize}">
+  <SRS>{crs_wkt}</SRS>
+  <GeoTransform>{gt0}, {gt1}, {gt2}, {gt3}, {gt4}, {gt5}</GeoTransform>
+  <VRTRasterBand dataType="{gdal_dtype}" band="1">
+    <SimpleSource>
+      <SourceFilename relativeToVRT="0">{source}</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SrcRect xOff="0" yOff="0" xSize="{xsize}" ySize="{ysize}"/>
+      <DstRect xOff="0" yOff="0" xSize="{xsize}" ySize="{ysize}"/>
+    </SimpleSource>
+  </VRTRasterBand>
+</VRTDataset>
+"""
+
+# Numpy dtype name -> GDAL data type string used in VRT XML.
+_NUMPY_TO_GDAL_VRT_DTYPE: dict[str, str] = {
+    "uint8": "Byte",
+    "int8": "Int8",
+    "uint16": "UInt16",
+    "int16": "Int16",
+    "uint32": "UInt32",
+    "int32": "Int32",
+    "uint64": "UInt64",
+    "int64": "Int64",
+    "float32": "Float32",
+    "float64": "Float64",
+    "complex64": "CFloat32",
+    "complex128": "CFloat64",
+}
+
+
+def zarr_subdataset_uri(
+    store_path: Filename, variable: str, layer: int, group: str | None = None
+) -> str:
+    """Build a GDAL ``ZARR:`` connection string for one 2D slice of a cube.
+
+    The result can be opened by ``gdal.Open`` / ``rasterio.open`` directly.
+    ``layer`` selects the index along the leading (non-spatial) dimension.
+    The store path is resolved to an absolute path so VRTs referencing it
+    stay valid if they're later moved between directories (e.g. the
+    per-ministack → top-level shuffle in ``sequential.py``).
+    """
+    inner = f"/{group}/{variable}" if group else f"/{variable}"
+    return f'ZARR:"{Path(store_path).resolve()}":{inner}:{layer}'
+
+
+def layer_vrt_path(output_path: Path | str) -> Path:
+    """Return the canonical VRT path corresponding to a planned tif path.
+
+    Replaces a trailing ``.tif`` with ``.vrt`` so downstream globs that look
+    for stack outputs by basename keep working with minimal pattern tweaks.
+    """
+    p = Path(output_path)
+    if p.suffix == ".tif":
+        return p.with_suffix(".vrt")
+    return p.with_suffix(p.suffix + ".vrt")
+
+
+def emit_layer_vrts(
+    *,
+    store_path: Filename,
+    variable: str,
+    layer_paths: Sequence[Path],
+    height: int,
+    width: int,
+    dtype: DTypeLike,
+    crs_wkt: str,
+    geotransform: Sequence[float],
+    group: str | None = None,
+) -> list[Path]:
+    """Write one VRT per layer of ``variable`` inside the cube at ``store_path``.
+
+    Each VRT references ``ZARR:store_path:/[group/]variable:i`` as its source
+    filename, so GDAL/rasterio readers see a normal 2D raster with the cube
+    layer's pixel data, transform, and CRS. No data is copied — the VRT is a
+    handful of bytes per layer.
+
+    Parameters
+    ----------
+    store_path : Filename
+        Path to the zarr store directory.
+    variable : str
+        Array name inside the store (e.g. ``"slcs"``).
+    layer_paths : Sequence[Path]
+        Output VRT paths, one per layer along the cube's leading axis. The
+        number of paths must match the cube's leading-axis length, but that
+        is checked by the caller.
+    height, width : int
+        Pixel dimensions of each layer.
+    dtype : DTypeLike
+        Numpy dtype of cube elements; mapped to a GDAL VRT data type name.
+    crs_wkt : str
+        Spatial reference written into the VRT's ``<SRS>`` element.
+    geotransform : Sequence[float]
+        6-element GDAL geotransform.
+    group : str, optional
+        Subgroup within the store, if the variable lives inside one.
+
+    Returns
+    -------
+    list[Path]
+        The same ``layer_paths`` (resolved to ``Path`` objects), now on disk.
+
+    """
+    np_dtype = np.dtype(dtype)
+    gdal_dtype = _NUMPY_TO_GDAL_VRT_DTYPE.get(np_dtype.name)
+    if gdal_dtype is None:
+        msg = f"No GDAL VRT dtype mapping for numpy dtype {np_dtype.name!r}"
+        raise ValueError(msg)
+
+    gt = tuple(float(v) for v in geotransform)
+    if len(gt) != 6:
+        raise ValueError(f"geotransform must have 6 elements, got {len(gt)}")
+
+    out: list[Path] = []
+    for i, raw_path in enumerate(layer_paths):
+        p = Path(raw_path)
+        p.parent.mkdir(exist_ok=True, parents=True)
+        source = zarr_subdataset_uri(store_path, variable, i, group=group)
+        p.write_text(
+            _VRT_TEMPLATE.format(
+                xsize=width,
+                ysize=height,
+                crs_wkt=crs_wkt,
+                gt0=gt[0],
+                gt1=gt[1],
+                gt2=gt[2],
+                gt3=gt[3],
+                gt4=gt[4],
+                gt5=gt[5],
+                gdal_dtype=gdal_dtype,
+                source=source,
+            )
+        )
+        out.append(p)
+    return out

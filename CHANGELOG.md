@@ -5,18 +5,22 @@
 ### Added
 - Optional GeoZarr output format for per-ministack phase-linking outputs.
   Set `output_options.output_format: geozarr` in your config (or pass
-  `output_format=OutputFormat.GEOZARR` to the workflow) to have phase-linked
-  SLCs, CRLB, and closure phases written into a single `cube.zarr` per
-  ministack as the native target of the parallel block loop. Per-layer
-  GeoTIFFs are then exported from each cube into the same paths the
-  GeoTIFF format would have produced, so the existing tif-based stitching
-  / unwrap / timeseries chain keeps working unchanged. The cube is an
-  additional artifact (consumable by rioxarray, geozarr-toolkit, or
-  bowser), not a replacement. Requires `pip install dolphin[geozarr]`
-  (zarr ≥ 3, xarray, rioxarray).
+  `output_format=OutputFormat.GEOZARR` to the workflow) and the parallel
+  block loop writes phase-linked SLCs, CRLB, and closure phases into a
+  single `cube.zarr` per ministack instead of into N separate GeoTIFFs.
+  No pixel data is duplicated for downstream consumers: each cube layer
+  is exposed to the rest of the tif-based pipeline (interferogram
+  formation, stitching, unwrap, timeseries) via a thin per-layer VRT
+  shim that references `ZARR:cube.zarr:/<var>:i` as its source.
+  GDAL/rasterio (≥ GDAL 3.10) opens those VRTs transparently. The cube is
+  written in zarr v2 format by default so GDAL can read it natively; pass
+  `zarr_format=3` to the writer to opt into the newer spec. Requires
+  `pip install dolphin[geozarr]` (zarr ≥ 3, xarray, rioxarray).
 - `dolphin.io.GeoZarrWriter` / `GeoZarrStackWriter` /
   `BackgroundGeoZarrStackWriter` for block-writing 2D arrays and 3D cubes
-  into GeoZarr stores from arbitrary pipelines.
+  into GeoZarr stores from arbitrary pipelines, plus `emit_layer_vrts`
+  and `zarr_subdataset_uri` helpers for exposing cube layers as
+  GDAL-readable rasters.
 
 ## [0.42.0](https://github.com/isce-framework/dolphin/compare/v0.41.0...v0.42.0) - 2025-08-19
 

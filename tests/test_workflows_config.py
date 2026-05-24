@@ -114,6 +114,13 @@ def test_outputs_defaults():
         "compression_opts": 4,
         "shuffle": True,
     }
+    # GeoTIFF remains the default output format.
+    assert opts.output_format == config.OutputFormat.GEOTIFF
+
+
+def test_outputs_geozarr():
+    opts = config.OutputOptions(output_format="geozarr")
+    assert opts.output_format == config.OutputFormat.GEOZARR
 
 
 def test_worker_settings_defaults():

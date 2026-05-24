@@ -24,7 +24,7 @@ from dolphin.ps import calc_ps_block
 from dolphin.stack import MiniStackInfo
 from dolphin.utils import DummyProcessPoolExecutor, grow_nodata_region
 
-from .config import ShpMethod
+from .config import OutputFormat, ShpMethod
 
 logger = logging.getLogger("dolphin")
 
@@ -64,6 +64,7 @@ def run_wrapped_phase_single(
     block_shape: tuple[int, int] = (512, 512),
     baseline_lag: Optional[int] = None,
     max_workers: int = 1,
+    output_format: OutputFormat = OutputFormat.GEOTIFF,
     **tqdm_kwargs,
 ):
     """Estimate wrapped phase for one ministack.
@@ -112,39 +113,61 @@ def run_wrapped_phase_single(
     logger.info(f"Total stack size (in pixels): {vrt_stack.shape}")
     # Set up the output folder with empty files to write into
     like_filename = vrt_stack.outfile
-    phase_linked_slc_files = setup_output_folder(
+
+    # Stack outputs (one layer per date / triplet) are written either as
+    # per-layer GeoTIFFs (default) or as 3D cubes inside a shared GeoZarr
+    # store. The block loop calls ``.write_layer(idx, data, row, col)`` on
+    # each stack output, which abstracts over the two implementations.
+    slc_stack = _make_stack_output(
+        kind="slcs",
+        output_format=output_format,
         ministack=ministack,
-        name_generator=_name_slcs,
-        strides=strides,
         output_folder=output_folder,
         like_filename=like_filename,
+        strides=strides,
+        dtype=np.complex64,
+        name_generator=_name_slcs,
+        shared_tiff_writer=writer,
+        keep_bits=12,
     )
+    phase_linked_slc_files: list[Path] = slc_stack.files
 
-    crlb_output_folder = output_folder / "crlb"
-    crlb_output_folder.mkdir(exist_ok=True)
-    phase_linked_crlb_files: list[Path] = []
-    closure_phase_files: list[Path] = []
+    crlb_stack: _LayerStackOutput | None = None
+    closure_stack: _LayerStackOutput | None = None
     if write_crlb:
-        phase_linked_crlb_files = setup_output_folder(
+        crlb_stack = _make_stack_output(
+            kind="crlb",
+            output_format=output_format,
             ministack=ministack,
+            output_folder=output_folder,
+            like_filename=like_filename,
+            strides=strides,
+            dtype=np.float32,
             name_generator=_name_crlbs,
-            strides=strides,
-            dtype="float32",
-            output_folder=crlb_output_folder,
-            like_filename=like_filename,
+            sub_dir="crlb",
+            shared_tiff_writer=writer,
+            keep_bits=10,
         )
-
     if write_closure_phase:
-        closure_phases_output_folder = output_folder / "closure_phases"
-        closure_phases_output_folder.mkdir(exist_ok=True)
-        closure_phase_files = setup_output_folder(
+        closure_stack = _make_stack_output(
+            kind="closure_phases",
+            output_format=output_format,
             ministack=ministack,
-            name_generator=_name_closure_phases,
-            strides=strides,
-            dtype="float32",
-            output_folder=closure_phases_output_folder,
+            output_folder=output_folder,
             like_filename=like_filename,
+            strides=strides,
+            dtype=np.float32,
+            name_generator=_name_closure_phases,
+            sub_dir="closure_phases",
+            shared_tiff_writer=writer,
+            keep_bits=10,
         )
+    phase_linked_crlb_files: list[Path] = (
+        crlb_stack.files if crlb_stack is not None else []
+    )
+    closure_phase_files: list[Path] = (
+        closure_stack.files if closure_stack is not None else []
+    )
 
     comp_slc_info = ministack.get_compressed_slc_info()
 
@@ -301,31 +324,27 @@ def run_wrapped_phase_single(
         # ### Save results ###
         with write_lock:
             # ### Save results ###
-            for img, f in zip(
-                pl_output.cpx_phase[first_real_slc_idx:, out_trim_rows, out_trim_cols],
-                phase_linked_slc_files,
-                strict=True,
+            for i, img in enumerate(
+                pl_output.cpx_phase[first_real_slc_idx:, out_trim_rows, out_trim_cols]
             ):
-                writer.queue_write(img, f, out_rows.start, out_cols.start)
+                slc_stack.write_layer(i, img, out_rows.start, out_cols.start)
 
-            if write_crlb:
-                for img, f in zip(
+            if write_crlb and crlb_stack is not None:
+                for i, img in enumerate(
                     pl_output.crlb_std_dev[
                         first_real_slc_idx:, out_trim_rows, out_trim_cols
-                    ],
-                    phase_linked_crlb_files,
-                    strict=True,
+                    ]
                 ):
-                    writer.queue_write(img, f, out_rows.start, out_cols.start)
+                    crlb_stack.write_layer(i, img, out_rows.start, out_cols.start)
 
-            if write_closure_phase:
+            if write_closure_phase and closure_stack is not None:
                 # Save closure phases (N-2 images for N dates)
-                for i, closure_file in enumerate(closure_phase_files):
+                for i in range(closure_stack.n_layers):
                     closure_img = pl_output.closure_phases[
                         out_trim_rows, out_trim_cols, i
                     ]
-                    writer.queue_write(
-                        closure_img, closure_file, out_rows.start, out_cols.start
+                    closure_stack.write_layer(
+                        i, closure_img, out_rows.start, out_cols.start
                     )
 
             # Save the compressed SLC block
@@ -374,8 +393,24 @@ def run_wrapped_phase_single(
     # Block until all the writers for this ministack have finished
     logger.info(f"Waiting to write {writer.num_queued} blocks of data.")
     writer.notify_finished()
+    slc_stack.close()
+    if crlb_stack is not None:
+        crlb_stack.close()
+    if closure_stack is not None:
+        closure_stack.close()
     logger.info(f"Finished ministack of size {vrt_stack.shape}.")
     loader.notify_finished()
+
+    # GEOZARR: derive per-layer tifs from the cube so downstream consumers
+    # (interferogram formation, stitching, unwrap) keep working. Cube remains
+    # the canonical artifact for visualizers.
+    if output_format == OutputFormat.GEOZARR:
+        logger.info("Exporting per-layer GeoTIFFs from GeoZarr cube")
+        slc_stack.export_tifs(like_filename=like_filename)
+        if crlb_stack is not None:
+            crlb_stack.export_tifs(like_filename=like_filename)
+        if closure_stack is not None:
+            closure_stack.export_tifs(like_filename=like_filename)
 
     logger.info("Repacking phase linking outputs for more compression")
     io.repack_rasters(phase_linked_slc_files, keep_bits=12)
@@ -589,3 +624,210 @@ def setup_output_folder(
         output_files.append(output_path)
 
     return output_files
+
+
+# ----------------------------------------------------------------------
+# Layer-stack outputs: one writer per "kind" of per-date layer.
+#
+# Both implementations expose the same minimal interface:
+#   .files      -> list[Path] for downstream consumers (interferogram formation,
+#                  stitching, ...) that still expect per-layer GeoTIFFs.
+#   .n_layers   -> int
+#   .write_layer(layer_idx, data, row_start, col_start)
+#   .close()
+#   .export_tifs(like_filename) -> populate .files from a finished cube (no-op
+#                                   for the GeoTIFF impl).
+#
+# The GeoZarr cube is the canonical artifact when output_format=GEOZARR; tifs
+# are exported only because the rest of the pipeline currently expects them.
+# ----------------------------------------------------------------------
+
+
+class _LayerStackOutput:
+    """Base / minimal interface; concrete subclasses below."""
+
+    files: list[Path]
+    n_layers: int
+
+    def write_layer(
+        self, layer_idx: int, data: np.ndarray, row_start: int, col_start: int
+    ) -> None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+    def export_tifs(self, like_filename: Filename) -> None:  # noqa: ARG002
+        """Materialize per-layer tifs from the cube. No-op for TIFF stacks."""
+        return None
+
+
+class _TiffLayerStack(_LayerStackOutput):
+    """Per-layer GeoTIFFs written via a shared ``BackgroundBlockWriter``."""
+
+    def __init__(
+        self,
+        files: list[Path],
+        writer: "io.BackgroundBlockWriter",
+    ):
+        self.files = files
+        self.n_layers = len(files)
+        self._writer = writer
+
+    def write_layer(
+        self, layer_idx: int, data: np.ndarray, row_start: int, col_start: int
+    ) -> None:
+        self._writer.queue_write(data, self.files[layer_idx], row_start, col_start)
+
+    def close(self) -> None:
+        # Writer is shared across stacks; closed once by the caller.
+        return None
+
+
+class _ZarrLayerStack(_LayerStackOutput):
+    """3D ``(n_layers, y, x)`` cube inside a shared GeoZarr store."""
+
+    def __init__(
+        self,
+        store_path: Path,
+        name: str,
+        n_layers: int,
+        tif_paths: list[Path],
+        like_filename: Filename,
+        dtype: DTypeLike,
+        strides: dict[str, int],
+        keep_bits: int | None,
+    ):
+        from dolphin.io._geozarr import BackgroundGeoZarrStackWriter
+
+        self.store_path = store_path
+        self.name = name
+        self.n_layers = n_layers
+        # ``files`` is populated only after ``export_tifs`` runs, but we keep
+        # the planned paths around so downstream callers can know where the
+        # tifs will land.
+        self._planned_paths = list(tif_paths)
+        self.files = list(tif_paths)
+        self._dtype = np.dtype(dtype)
+        self._strides = strides
+        self._keep_bits = keep_bits
+
+        # Build a strided "like" raster for output shape/transform when strides
+        # aren't trivial. The block loop emits data at strided resolution.
+        h_out, w_out, gt_out, crs_wkt = _strided_geo(like_filename, strides)
+
+        self._writer = BackgroundGeoZarrStackWriter(
+            store_path=store_path,
+            name=name,
+            n_layers=n_layers,
+            shape=(h_out, w_out),
+            dtype=self._dtype,
+            crs_wkt=crs_wkt,
+            geotransform=gt_out,
+            keep_bits=keep_bits,
+            layer_dim_name="time",
+        )
+
+    def write_layer(
+        self, layer_idx: int, data: np.ndarray, row_start: int, col_start: int
+    ) -> None:
+        self._writer.queue_write(data, row_start, col_start, layer=layer_idx)
+
+    def close(self) -> None:
+        self._writer.close()
+
+    def export_tifs(self, like_filename: Filename) -> None:
+        """Dump each layer of the cube to its planned GeoTIFF path."""
+        import zarr
+
+        root = zarr.open_group(str(self.store_path), mode="r")
+        arr = root[self.name]
+        for idx, path in enumerate(self._planned_paths):
+            path.parent.mkdir(exist_ok=True, parents=True)
+            io.write_arr(
+                arr=None,
+                like_filename=like_filename,
+                output_name=path,
+                dtype=self._dtype,
+                strides=self._strides,
+            )
+            # Read whole 2D layer into memory and write it. These are
+            # ministack-sized blocks, which already fit in RAM in the main
+            # block loop above.
+            layer = np.asarray(arr[idx])
+            io.write_block(layer, path, row_start=0, col_start=0)
+
+
+def _strided_geo(
+    like_filename: Filename, strides: dict[str, int]
+) -> tuple[int, int, list[float], str]:
+    """Return ``(height, width, geotransform, crs_wkt)`` after applying strides."""
+    from dolphin.utils import compute_out_shape
+
+    h0, w0 = io.get_raster_xysize(like_filename)[::-1]
+    h, w = compute_out_shape(
+        (h0, w0), Strides(y=strides["y"], x=strides["x"])
+    )
+    gt = list(io.get_raster_gt(like_filename))
+    gt[1] *= strides["x"]
+    gt[5] *= strides["y"]
+    crs_wkt = io.get_raster_crs(like_filename).to_wkt()
+    return h, w, gt, crs_wkt
+
+
+def _make_stack_output(
+    *,
+    kind: str,
+    output_format: OutputFormat,
+    ministack: MiniStackInfo,
+    output_folder: Path,
+    like_filename: Filename,
+    strides: dict[str, int],
+    dtype: DTypeLike,
+    name_generator: Callable[[MiniStackInfo], list[str]],
+    shared_tiff_writer: "io.BackgroundBlockWriter",
+    keep_bits: int | None = None,
+    sub_dir: str | None = None,
+) -> _LayerStackOutput:
+    """Build a stack output of the requested format.
+
+    Both formats compute the planned per-layer tif paths up-front (so
+    ``.files`` is always populated for downstream consumers), but only the
+    TIFF format writes empty tifs to disk here. The ZARR format defers tif
+    materialization to ``export_tifs`` after the block loop finishes.
+    """
+    target_dir = output_folder / sub_dir if sub_dir else output_folder
+    target_dir.mkdir(exist_ok=True, parents=True)
+    filenames = name_generator(ministack)
+    tif_paths = [target_dir / f for f in filenames]
+
+    if output_format == OutputFormat.GEOTIFF:
+        # Allocate empty tifs up-front so the BackgroundBlockWriter can write
+        # into them block-by-block.
+        for p in tif_paths:
+            io.write_arr(
+                arr=None,
+                like_filename=like_filename,
+                output_name=p,
+                driver="GTiff",
+                nbands=1,
+                dtype=np.dtype(dtype),
+                strides=strides,
+                nodata=0,
+            )
+        return _TiffLayerStack(files=tif_paths, writer=shared_tiff_writer)
+
+    if output_format == OutputFormat.GEOZARR:
+        store_path = output_folder / "cube.zarr"
+        return _ZarrLayerStack(
+            store_path=store_path,
+            name=kind,
+            n_layers=len(tif_paths),
+            tif_paths=tif_paths,
+            like_filename=like_filename,
+            dtype=dtype,
+            strides=strides,
+            keep_bits=keep_bits,
+        )
+
+    raise ValueError(f"Unknown output_format {output_format!r}")

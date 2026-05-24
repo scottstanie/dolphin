@@ -20,7 +20,7 @@ from dolphin._types import Bbox
 from dolphin.io import DEFAULT_HDF5_OPTIONS, DEFAULT_TIFF_OPTIONS
 from dolphin.stack import CompressedSlcPlan
 
-from ._enums import ShpMethod
+from ._enums import OutputFormat, ShpMethod
 from ._yaml_model import YamlModel
 
 logger = logging.getLogger("dolphin")
@@ -363,6 +363,15 @@ class OutputOptions(BaseModel, extra="forbid"):
         ),
     )
 
+    output_format: OutputFormat = Field(
+        OutputFormat.GEOTIFF,
+        description=(
+            "Container format for per-ministack phase-linking outputs (phase-linked"
+            " SLCs, CRLB, closure phases). `geotiff` writes one file per layer;"
+            " `geozarr` writes 3D cubes per ministack. Stitched, unwrapped, and"
+            " timeseries outputs are always written as GeoTIFFs."
+        ),
+    )
     hdf5_creation_options: dict = Field(
         DEFAULT_HDF5_OPTIONS,
         description="Options for `create_dataset` with h5py.",

@@ -1,9 +1,17 @@
 from enum import Enum
 
 __all__ = [
+    "OutputFormat",
     "ShpMethod",
     "UnwrapMethod",
 ]
+
+
+class OutputFormat(str, Enum):
+    """Output container format for phase-linking outputs."""
+
+    GEOTIFF = "geotiff"
+    GEOZARR = "geozarr"
 
 
 class ShpMethod(str, Enum):

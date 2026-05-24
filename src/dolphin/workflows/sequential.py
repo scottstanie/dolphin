@@ -20,7 +20,7 @@ from dolphin.io import VRTStack
 from dolphin.similarity import create_similarities
 from dolphin.stack import CompressedSlcPlan, MiniStackPlanner
 
-from .config import ShpMethod
+from .config import OutputFormat, ShpMethod
 from .single import run_wrapped_phase_single
 
 logger = logging.getLogger("dolphin")
@@ -56,6 +56,7 @@ def run_wrapped_phase_sequential(
     block_shape: tuple[int, int] = (512, 512),
     baseline_lag: Optional[int] = None,
     max_workers: int = 1,
+    output_format: OutputFormat = OutputFormat.GEOTIFF,
     **tqdm_kwargs,
 ) -> tuple[
     list[Path], list[Path], list[Path], list[Path], list[Path], list[Path], list[Path]
@@ -143,6 +144,7 @@ def run_wrapped_phase_sequential(
                 block_shape=block_shape,
                 baseline_lag=baseline_lag,
                 max_workers=max_workers,
+                output_format=output_format,
                 **tqdm_kwargs,
             )
 

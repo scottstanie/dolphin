@@ -1,0 +1,5 @@
+# Optional dependencies for the GeoZarr output writer.
+# Install with `pip install dolphin[geozarr]`.
+zarr>=3
+xarray
+rioxarray

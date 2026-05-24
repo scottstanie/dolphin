@@ -253,6 +253,7 @@ def run(
             write_closure_phase=cfg.phase_linking.write_closure_phase,
             block_shape=cfg.worker_settings.block_shape,
             max_workers=max_workers,
+            output_format=cfg.output_options.output_format,
             **kwargs,
         )
     # Dump the used options for JSON parsing

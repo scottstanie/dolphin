@@ -42,6 +42,10 @@ dependencies = { file = ["requirements.txt"] }
 file = ["docs/requirements.txt"]
 [tool.setuptools.dynamic.optional-dependencies.test]
 file = ["tests/requirements.txt"]
+# Optional dependencies for the GeoZarr output writer:
+#   pip install dolphin[geozarr]
+[tool.setuptools.dynamic.optional-dependencies.geozarr]
+file = ["requirements-geozarr.txt"]
 
 [tool.setuptools_scm]
 # https://github.com/pypa/setuptools_scm#configuration-parameters

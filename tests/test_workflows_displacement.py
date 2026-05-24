@@ -285,6 +285,53 @@ def test_displacement_run_extra_reference_date(
         log_file.unlink()
 
 
+def test_displacement_run_geozarr(opera_slc_files: list[Path], tmpdir):
+    """End-to-end displacement run with ``output_format=geozarr``.
+
+    Verifies the stitching → unwrap → timeseries chain still works when
+    phase-linking emits GeoZarr cubes per ministack: tifs must be exported
+    from each cube so the existing tif-based downstream consumers
+    (stitching, unwrap, timeseries) keep finding their inputs.
+    """
+    pytest.importorskip("zarr")
+    import zarr
+
+    with tmpdir.as_cwd():
+        cfg = config.DisplacementWorkflow(
+            cslc_file_list=opera_slc_files,
+            input_options={"subdataset": "/data/VV"},
+            output_options={"output_format": "geozarr"},
+            interferogram_network={
+                "indexes": [(0, -1)],
+                "max_bandwidth": 2,
+            },
+            phase_linking={"ministack_size": 500},
+            timeseries_options={"reference_point": (5, 6)},
+        )
+        paths = displacement.run(cfg)
+
+        # Downstream stitching still produced tif-based outputs, which means
+        # `_ZarrLayerStack.export_tifs` correctly materialized per-date tifs
+        # from each ministack cube for the interferogram-formation step.
+        assert all(p.exists() for p in paths.stitched_ifg_paths)
+        assert all(p.exists() for p in paths.stitched_cor_paths)
+        assert paths.unwrapped_paths is not None
+        assert all(p.exists() for p in paths.unwrapped_paths)
+        assert paths.timeseries_paths is not None
+        assert all(p.exists() for p in paths.timeseries_paths)
+
+        # At least one per-burst phase-linking directory must contain the
+        # canonical cube alongside the (exported) per-date tifs.
+        burst_dir = next(iter(paths.comp_slc_dict.values()))[0].parent.parent
+        pl_dir = burst_dir / "linked_phase"
+        cubes = list(pl_dir.rglob("cube.zarr"))
+        assert cubes, f"No cube.zarr found under {pl_dir}"
+
+        root = zarr.open_group(str(cubes[0]), mode="r")
+        assert {"y", "x", "spatial_ref"}.issubset(set(root.keys()))
+        assert "slcs" in root and root["slcs"].ndim == 3
+
+
 def test_displacement_run_different_epsg(opera_slc_files: list[Path], tmpdir):
     with tmpdir.as_cwd():
         cfg = config.DisplacementWorkflow(

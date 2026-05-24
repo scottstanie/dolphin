@@ -6,10 +6,13 @@
 - Optional GeoZarr output format for per-ministack phase-linking outputs.
   Set `output_options.output_format: geozarr` in your config (or pass
   `output_format=OutputFormat.GEOZARR` to the workflow) to have phase-linked
-  SLCs, CRLB, and closure phases written as 3D cubes inside a single
-  `cube.zarr` per ministack instead of one GeoTIFF per layer. Per-layer
-  GeoTIFFs are still emitted for backward compatibility with downstream
-  stitching / unwrap / timeseries steps. Requires `pip install dolphin[geozarr]`
+  SLCs, CRLB, and closure phases written into a single `cube.zarr` per
+  ministack as the native target of the parallel block loop. Per-layer
+  GeoTIFFs are then exported from each cube into the same paths the
+  GeoTIFF format would have produced, so the existing tif-based stitching
+  / unwrap / timeseries chain keeps working unchanged. The cube is an
+  additional artifact (consumable by rioxarray, geozarr-toolkit, or
+  bowser), not a replacement. Requires `pip install dolphin[geozarr]`
   (zarr ≥ 3, xarray, rioxarray).
 - `dolphin.io.GeoZarrWriter` / `GeoZarrStackWriter` /
   `BackgroundGeoZarrStackWriter` for block-writing 2D arrays and 3D cubes

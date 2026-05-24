@@ -638,8 +638,14 @@ def setup_output_folder(
 #   .export_tifs(like_filename) -> populate .files from a finished cube (no-op
 #                                   for the GeoTIFF impl).
 #
-# The GeoZarr cube is the canonical artifact when output_format=GEOZARR; tifs
-# are exported only because the rest of the pipeline currently expects them.
+# When ``output_format=GEOZARR``, the parallel block loop writes natively
+# into a single ``cube.zarr`` per ministack (the "natural 3D parallel
+# write" — no per-block tif writes during the loop). Then ``export_tifs``
+# runs once at the end to materialize per-date GeoTIFFs into the same
+# paths the GeoTIFF format would have produced. Stitching, unwrap, and
+# timeseries downstream of ``single.py`` are tif-based and consume those
+# exported tifs unchanged; the cube is an additional artifact (consumable
+# by rioxarray / bowser / geozarr-toolkit) rather than a replacement.
 # ----------------------------------------------------------------------
 
 

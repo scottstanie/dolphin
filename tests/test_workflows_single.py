@@ -1,10 +1,12 @@
+import numpy as np
 import pytest
 
 from dolphin import stack
-from dolphin.io import _readers
+from dolphin.io import _readers, load_gdal
 from dolphin.phase_link import simulate
 from dolphin.utils import gpu_is_available
 from dolphin.workflows import single
+from dolphin.workflows.config import OutputFormat
 
 GPU_AVAILABLE = gpu_is_available()
 simulate._seed(1234)
@@ -43,3 +45,61 @@ def test_sequential_gtiff(tmp_path, slc_file_list, write_extra: bool):
     assert len(list(output_folder.glob("2*.slc.tif"))) == 3
     assert len(list(output_folder.glob("compressed_*tif"))) == 1
     assert len(list(output_folder.glob("temporal_coherence*tif"))) == 1
+
+
+def test_sequential_geozarr(tmp_path, slc_file_list):
+    """Single-ministack run with GeoZarr output.
+
+    Asserts that:
+    - a ``cube.zarr`` is produced with the expected per-kind variables
+    - per-date GeoTIFFs are still written (for downstream stitching) and
+      their pixel values match the corresponding cube layer
+    """
+    pytest.importorskip("zarr")
+    import zarr
+
+    vrt_file = tmp_path / "slc_stack.vrt"
+    files = slc_file_list[:3]
+    vrt_stack = _readers.VRTStack(files, outfile=vrt_file)
+    is_compressed = [False] * len(files)
+    ministack = stack.MiniStackInfo(
+        file_list=vrt_stack.file_list,
+        dates=vrt_stack.dates,
+        is_compressed=is_compressed,
+    )
+
+    output_folder = tmp_path / "single_zarr"
+    single.run_wrapped_phase_single(
+        vrt_stack=vrt_stack,
+        ministack=ministack,
+        output_folder=output_folder,
+        half_window={"x": 2, "y": 1},
+        strides={"x": 1, "y": 1},
+        shp_method="rect",
+        write_crlb=True,
+        write_closure_phase=True,
+        output_format=OutputFormat.GEOZARR,
+    )
+
+    cube_path = output_folder / "cube.zarr"
+    assert cube_path.exists(), "GeoZarr cube directory not created"
+
+    root = zarr.open_group(str(cube_path), mode="r")
+    # Coord scaffolding required by GeoZarr / rioxarray readers.
+    assert {"y", "x", "spatial_ref"}.issubset(set(root.keys()))
+    # One 3D array per kind.
+    assert "slcs" in root
+    assert root["slcs"].shape[0] == 3  # 3 input dates
+    assert "crlb" in root
+    assert "closure_phases" in root
+    assert root["closure_phases"].shape[0] == 1  # N-2 triplets for N=3
+
+    # Per-layer tifs were exported for downstream consumers.
+    slc_tifs = sorted(output_folder.glob("2*.slc.tif"))
+    assert len(slc_tifs) == 3
+
+    # Cube layer i and tif i should contain identical pixel data.
+    for i, tif in enumerate(slc_tifs):
+        cube_layer = np.asarray(root["slcs"][i])
+        tif_data = load_gdal(tif)
+        np.testing.assert_array_equal(cube_layer, tif_data)

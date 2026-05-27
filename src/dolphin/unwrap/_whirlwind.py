@@ -32,9 +32,9 @@ def unwrap_whirlwind(
     unw_nodata: Optional[float] = DEFAULT_UNW_NODATA,
     ccl_nodata: Optional[int] = DEFAULT_CCL_NODATA,
 ) -> tuple[Path, Path]:
-    """Unwrap an interferogram and grow conncomps using whirlwind-rs.
+    """Unwrap an interferogram and grow conncomps using whirlwind.
 
-    Uses ``whirlwind_rs.unwrap_with_conncomp``, which emits both the
+    Uses ``whirlwind.unwrap_with_conncomp``, which emits both the
     unwrapped phase and SNAPHU-style connected component labels from a
     single MCF solve.
 
@@ -67,7 +67,7 @@ def unwrap_whirlwind(
 
     """
     import snaphu  # used here only for raster I/O
-    import whirlwind_rs as ww
+    import whirlwind as ww
 
     # Create a context manager that combines other context managers -- one for each
     # input raster file. Upon exiting the context block, each context manager in the
@@ -90,7 +90,7 @@ def unwrap_whirlwind(
             mask = stack.enter_context(snaphu.io.Raster(mask_file))
             mask_arr = np.ascontiguousarray(mask[:, :], dtype=bool)
 
-        logger.info("Unwrapping using whirlwind-rs")
+        logger.info("Unwrapping using whirlwind")
         igram_arr = np.ascontiguousarray(igram[:, :], dtype=np.complex64)
         corr_arr = np.ascontiguousarray(corr[:, :], dtype=np.float32)
         unw, conncomp_arr = ww.unwrap_with_conncomp(

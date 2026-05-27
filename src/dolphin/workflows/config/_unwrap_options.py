@@ -138,7 +138,7 @@ class SnaphuOptions(BaseModel, extra="forbid"):
 
 
 class WhirlwindOptions(BaseModel, extra="forbid"):
-    """User-tunable options for the whirlwind-rs (ww) unwrapper.
+    """User-tunable options for the whirlwind (ww) unwrapper.
 
     ww uses an internal rayon thread pool; pool size is shared across
     concurrent unwraps (``UnwrapOptions.n_parallel_jobs``). Empirically

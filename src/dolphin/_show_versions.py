@@ -59,7 +59,7 @@ def _get_unwrapping_options() -> dict[str, Optional[str]]:
 
     """
     out = {}
-    for unwrapper in ["snaphu", "spurt", "isce3", "tophu", "whirlwind_rs"]:
+    for unwrapper in ["snaphu", "spurt", "isce3", "tophu", "whirlwind"]:
         out[unwrapper] = _get_version(unwrapper)
         print(f"{unwrapper} : {out[unwrapper]}")
     return out

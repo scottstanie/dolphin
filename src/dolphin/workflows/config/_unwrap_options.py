@@ -22,7 +22,6 @@ __all__ = [
     "SpurtOptions",
     "TophuOptions",
     "UnwrapOptions",
-    "WhirlwindOptions",
 ]
 
 
@@ -137,22 +136,9 @@ class SnaphuOptions(BaseModel, extra="forbid"):
     _to_tuple = field_validator("ntiles", "tile_overlap", mode="before")(to_tuple)
 
 
-class WhirlwindOptions(BaseModel, extra="forbid"):
-    """Options for the whirlwind-rs phase unwrapper.
-
-    Whirlwind itself has very few user-tunable knobs. It does not yet
-    produce connected component labels; those are grown after unwrapping
-    using SNAPHU's region-growing, which is what `conncomp_grow_cost`
-    controls.
-    """
-
-    conncomp_grow_cost: Literal["defo", "smooth"] = Field(
-        "smooth",
-        description=(
-            "Statistical cost mode used by SNAPHU to grow connected components"
-            " after whirlwind-rs unwrapping."
-        ),
-    )
+# whirlwind-rs has no user-tunable options at the dolphin level today.
+# Connected components are emitted directly by ``ww.unwrap_with_conncomp``
+# from the MCF solve, so no SNAPHU-style cost-mode knob is needed.
 
 
 class TophuOptions(BaseModel, extra="forbid"):
@@ -395,4 +381,3 @@ class UnwrapOptions(BaseModel, extra="forbid"):
     snaphu_options: SnaphuOptions = Field(default_factory=SnaphuOptions)
     tophu_options: TophuOptions = Field(default_factory=TophuOptions)
     spurt_options: SpurtOptions = Field(default_factory=SpurtOptions)
-    whirlwind_options: WhirlwindOptions = Field(default_factory=WhirlwindOptions)

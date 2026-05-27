@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 import numpy as np
 
@@ -31,10 +31,12 @@ def unwrap_whirlwind(
     zero_where_masked: bool = False,
     unw_nodata: Optional[float] = DEFAULT_UNW_NODATA,
     ccl_nodata: Optional[int] = DEFAULT_CCL_NODATA,
-    conncomp_grow_cost: Literal["defo", "smooth"] = "smooth",
-    scratchdir: Optional[Filename] = None,
 ) -> tuple[Path, Path]:
-    """Unwrap an interferogram using `whirlwind-rs`.
+    """Unwrap an interferogram and grow conncomps using whirlwind-rs.
+
+    Uses ``whirlwind_rs.unwrap_with_conncomp``, which emits both the
+    unwrapped phase and SNAPHU-style connected component labels from a
+    single MCF solve.
 
     Parameters
     ----------
@@ -47,22 +49,14 @@ def unwrap_whirlwind(
     nlooks : float
         Effective number of looks used to form the input correlation data.
     mask_file : Filename, optional
-        Path to binary byte mask file, by default None.
-        Assumes that 1s are valid pixels and 0s are invalid.
+        Path to binary byte mask file. Assumes 1 = valid, 0 = invalid.
     zero_where_masked : bool, optional
         Set wrapped phase/correlation to 0 where mask is 0 before unwrapping.
-        If no mask is provided, this is ignored.
-        By default False.
+        Ignored if no mask is provided. Default False.
     unw_nodata : float, optional
         Nodata value for the output unwrapped phase raster.
     ccl_nodata : int, optional
         Nodata value for the connected component labels.
-    conncomp_grow_cost : {"defo", "smooth"}, optional
-        SNAPHU cost mode used to grow connected component labels after
-        unwrapping. By default "smooth".
-    scratchdir : Filename, optional
-        If provided, uses a scratch directory to save the intermediate files
-        during unwrapping.
 
     Returns
     -------
@@ -72,7 +66,7 @@ def unwrap_whirlwind(
         Path to output connected component label file.
 
     """
-    import snaphu
+    import snaphu  # used here only for raster I/O
     import whirlwind_rs as ww
 
     # Create a context manager that combines other context managers -- one for each
@@ -91,17 +85,17 @@ def unwrap_whirlwind(
             corr = stack.enter_context(snaphu.io.Raster(corr_filename))
 
         if mask_file is None:
-            mask = None
+            mask_arr = None
         else:
             mask = stack.enter_context(snaphu.io.Raster(mask_file))
+            mask_arr = np.ascontiguousarray(mask[:, :], dtype=bool)
 
         logger.info("Unwrapping using whirlwind-rs")
         igram_arr = np.ascontiguousarray(igram[:, :], dtype=np.complex64)
         corr_arr = np.ascontiguousarray(corr[:, :], dtype=np.float32)
-        mask_arr = (
-            np.ascontiguousarray(mask[:, :], dtype=bool) if mask is not None else None
+        unw, conncomp_arr = ww.unwrap_with_conncomp(
+            igram_arr, corr_arr, float(nlooks), mask=mask_arr
         )
-        unw = ww.unwrap(igram_arr, corr_arr, float(nlooks), mask=mask_arr)
 
         logger.info("Writing unwrapped phase to raster file")
         with snaphu.io.Raster.create(
@@ -116,25 +110,15 @@ def unwrap_whirlwind(
         unw_suffix = full_suffix(unw_filename)
         cc_filename = str(unw_filename).replace(unw_suffix, CONNCOMP_SUFFIX)
 
-        # whirlwind-rs does not produce connected components; grow them from the
-        # unwrapped phase using SNAPHU.
-        logger.info("Growing connected component labels using SNAPHU")
+        logger.info("Writing whirlwind connected component labels")
         with snaphu.io.Raster.create(
             cc_filename,
             like=igram,
             nodata=ccl_nodata,
             dtype=np.uint16,
             **DEFAULT_TIFF_OPTIONS_RIO,
-        ) as conncomp:
-            snaphu.grow_conncomps(
-                unw=unw,
-                corr=corr,
-                nlooks=nlooks,
-                mask=mask,
-                cost=conncomp_grow_cost,
-                scratchdir=scratchdir,
-                conncomp=conncomp,
-            )
+        ) as conncomp_raster:
+            conncomp_raster[:, :] = conncomp_arr.astype(np.uint16)
 
     if zero_where_masked and (mask_file is not None):
         logger.info(f"Zeroing unw/conncomp of pixels masked in {mask_file}")

@@ -22,6 +22,7 @@ __all__ = [
     "SpurtOptions",
     "TophuOptions",
     "UnwrapOptions",
+    "WhirlwindOptions",
 ]
 
 
@@ -136,9 +137,29 @@ class SnaphuOptions(BaseModel, extra="forbid"):
     _to_tuple = field_validator("ntiles", "tile_overlap", mode="before")(to_tuple)
 
 
-# whirlwind-rs has no user-tunable options at the dolphin level today.
-# Connected components are emitted directly by ``ww.unwrap_with_conncomp``
-# from the MCF solve, so no SNAPHU-style cost-mode knob is needed.
+class WhirlwindOptions(BaseModel, extra="forbid"):
+    """User-tunable options for the whirlwind-rs (ww) unwrapper.
+
+    ww uses an internal rayon thread pool; pool size is shared across
+    concurrent unwraps (``UnwrapOptions.n_parallel_jobs``). Empirically
+    ww's MCF is ~40% parallel / 60% serial (Amdahl-limited by the
+    primal-dual phase), so each unwrap saturates around 4 threads —
+    beyond that, added cores give negligible single-IG speedup but
+    concurrent unwraps still benefit from a larger shared pool.
+    """
+
+    num_threads: int | None = Field(
+        default=None,
+        description=(
+            "Threads for ww's internal rayon pool. ``None`` = let ww"
+            " use whatever ``WHIRLWIND_NUM_THREADS`` / ``RAYON_NUM_THREADS``"
+            " is set externally (e.g. via SLURM/``taskset``), falling back"
+            " to all CPUs. The pool is *shared* across the"
+            " ``n_parallel_jobs`` concurrent unwraps, so the effective"
+            " per-IG share is ``num_threads / n_parallel_jobs``."
+        ),
+        ge=1,
+    )
 
 
 class TophuOptions(BaseModel, extra="forbid"):
@@ -369,7 +390,17 @@ class UnwrapOptions(BaseModel, extra="forbid"):
     _directory: Path = PrivateAttr(Path("unwrapped"))
     unwrap_method: UnwrapMethod = UnwrapMethod.SNAPHU
     n_parallel_jobs: int = Field(
-        1, description="Number of interferograms to unwrap in parallel."
+        -1,
+        description=(
+            "Number of interferograms to unwrap in parallel."
+            " ``-1`` (default) auto-selects based on the unwrap method:"
+            " ``1`` for snaphu/spurt (which already parallelise"
+            " internally — snaphu over tiles, spurt over solver workers),"
+            " and ``max(1, cpu_count // 4)`` for whirlwind (its MCF"
+            " Amdahl-saturates around 4 threads per IG, so concurrency"
+            " gives a ~2x wall-clock speedup at no per-IG cost)."
+        ),
+        ge=-1,
     )
     zero_where_masked: bool = Field(
         False,
@@ -381,3 +412,4 @@ class UnwrapOptions(BaseModel, extra="forbid"):
     snaphu_options: SnaphuOptions = Field(default_factory=SnaphuOptions)
     tophu_options: TophuOptions = Field(default_factory=TophuOptions)
     spurt_options: SpurtOptions = Field(default_factory=SpurtOptions)
+    whirlwind_options: WhirlwindOptions = Field(default_factory=WhirlwindOptions)

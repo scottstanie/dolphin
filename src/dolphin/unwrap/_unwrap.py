@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -39,6 +40,36 @@ __all__ = ["run", "unwrap"]
 DEFAULT_OPTIONS = UnwrapOptions()
 
 PathOrStr = Path | str
+
+
+def _resolve_n_parallel_jobs(unwrap_options: UnwrapOptions) -> int:
+    """Resolve the ``n_parallel_jobs = -1`` sentinel to a concrete value.
+
+    For whirlwind, default to ``max(1, cpu_count // 4)`` because ww's
+    MCF Amdahl-saturates around 4 threads per IG — running multiple
+    concurrent unwraps sharing a larger pool gives ~2x wall-clock
+    speedup over sequential. For snaphu/spurt (which already
+    parallelise internally) default to ``1``.
+    """
+    n = unwrap_options.n_parallel_jobs
+    if n >= 1:
+        return n
+    if unwrap_options.unwrap_method == UnwrapMethod.WHIRLWIND:
+        return max(1, (os.cpu_count() or 1) // 4)
+    return 1
+
+
+def _propagate_whirlwind_thread_settings(unwrap_options: UnwrapOptions) -> None:
+    """Set ``WHIRLWIND_NUM_THREADS`` so the lazy ww import picks it up.
+
+    Uses ``os.environ.setdefault`` so an externally-set env var (e.g.
+    SLURM, ``taskset``) wins. The rayon pool is *shared* across all
+    concurrent ww unwraps in this process — see
+    :class:`WhirlwindOptions`.
+    """
+    n = unwrap_options.whirlwind_options.num_threads
+    if n is not None:
+        os.environ.setdefault("WHIRLWIND_NUM_THREADS", str(n))
 
 
 def run(
@@ -167,7 +198,9 @@ def run(
     else:
         scratch_dirs = itertools.repeat(scratchdir)  # type: ignore[assignment]
     # This keeps it from spawning a new process for a single job.
-    max_jobs = unwrap_options.n_parallel_jobs
+    max_jobs = _resolve_n_parallel_jobs(unwrap_options)
+    if unwrap_options.unwrap_method == UnwrapMethod.WHIRLWIND:
+        _propagate_whirlwind_thread_settings(unwrap_options)
 
     Executor = ThreadPoolExecutor if max_jobs > 1 else DummyProcessPoolExecutor
     with Executor(max_workers=max_jobs) as exc:

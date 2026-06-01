@@ -34,7 +34,7 @@ def unwrap_whirlwind(
 ) -> tuple[Path, Path]:
     """Unwrap an interferogram and grow conncomps using whirlwind.
 
-    Uses ``whirlwind.unwrap_with_conncomp``, which emits both the
+    Uses ``whirlwind.unwrap``, which emits both the
     unwrapped phase and SNAPHU-style connected component labels from a
     single MCF solve.
 
@@ -93,9 +93,10 @@ def unwrap_whirlwind(
         logger.info("Unwrapping using whirlwind")
         igram_arr = np.ascontiguousarray(igram[:, :], dtype=np.complex64)
         corr_arr = np.ascontiguousarray(corr[:, :], dtype=np.float32)
-        unw, conncomp_arr = ww.unwrap_with_conncomp(
-            igram_arr, corr_arr, float(nlooks), mask=mask_arr
-        )
+        # ww.unwrap returns (phase, conncomp) from the robust tiled pipeline.
+        # Goldstein is off by default (pass goldstein_alpha>0 to enable; under
+        # evaluation upstream). Renamed from the old ww.unwrap_with_conncomp.
+        unw, conncomp_arr = ww.unwrap(igram_arr, corr_arr, float(nlooks), mask=mask_arr)
 
         logger.info("Writing unwrapped phase to raster file")
         with snaphu.io.Raster.create(

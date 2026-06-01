@@ -10,7 +10,7 @@ from dolphin.workflows import SpurtOptions, TophuOptions, UnwrapMethod, UnwrapOp
 
 TOPHU_INSTALLED = importlib.util.find_spec("tophu") is not None
 SPURT_INSTALLED = importlib.util.find_spec("spurt") is not None
-WHIRLWIND_INSTALLED = importlib.util.find_spec("whirlwind_rs") is not None
+WHIRLWIND_INSTALLED = importlib.util.find_spec("whirlwind") is not None
 SPURS_INSTALLED = importlib.util.find_spec("spurs") is not None
 
 
@@ -338,9 +338,7 @@ class TestSpurt:
         # assert all(p.exists() for p in conncomp_paths)
 
 
-@pytest.mark.skipif(
-    not WHIRLWIND_INSTALLED, reason="whirlwind_rs package not installed"
-)
+@pytest.mark.skipif(not WHIRLWIND_INSTALLED, reason="whirlwind package not installed")
 class TestWhirlwind:
     def test_unwrap_whirlwind(self, tmp_path, raster_100_by_200, corr_raster):
         unw_filename = tmp_path / "whirlwind-unwrapped.unw.tif"

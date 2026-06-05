@@ -95,8 +95,7 @@ def unwrap_whirlwind(
         corr_arr = np.ascontiguousarray(corr[:, :], dtype=np.float32)
         # ww.unwrap returns (phase, conncomp). As of whirlwind 2026-06-03 the
         # default phase solver is the verified single-tile linear MCF (ww-orig
-        # parity + adaptive PD/SSP fallback); the older tiled pipeline is opt-in
-        # and not yet validated across NISAR frames. Goldstein is off by default
+        # parity + adaptive PD/SSP fallback);  Goldstein is off by default
         # (pass goldstein_alpha>0 to enable; under evaluation upstream).
         unw, conncomp_arr = ww.unwrap(igram_arr, corr_arr, float(nlooks), mask=mask_arr)
 

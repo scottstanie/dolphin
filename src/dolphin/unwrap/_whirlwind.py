@@ -31,6 +31,17 @@ def unwrap_whirlwind(
     zero_where_masked: bool = False,
     unw_nodata: Optional[float] = DEFAULT_UNW_NODATA,
     ccl_nodata: Optional[int] = DEFAULT_CCL_NODATA,
+    interpolate: bool = False,
+    interp_cutoff: float = 0.5,
+    interp_num_neighbors: int = 20,
+    interp_max_radius: int = 51,
+    interp_min_radius: int = 0,
+    interp_alpha: float = 0.75,
+    cost_threshold: int = 50,
+    conncomp_sigma: Optional[float] = None,
+    conncomp_cycle_prob: Optional[float] = None,
+    min_size_px: int = 100,
+    max_ncomps: int = 1024,
 ) -> tuple[Path, Path]:
     """Unwrap an interferogram and grow conncomps using whirlwind.
 
@@ -57,6 +68,24 @@ def unwrap_whirlwind(
         Nodata value for the output unwrapped phase raster.
     ccl_nodata : int, optional
         Nodata value for the connected component labels.
+    interpolate : bool, optional
+        Enable whirlwind's spiral PS interpolation pre-pass (fill valid pixels
+        with coherence below ``interp_cutoff`` from nearby high-coherence
+        phasors before unwrapping). Default False.
+    interp_cutoff, interp_num_neighbors, interp_max_radius, interp_min_radius, \
+interp_alpha
+        Spiral interpolation parameters; see ``whirlwind.unwrap``. Only used
+        when ``interpolate`` is True.
+    cost_threshold : int, optional
+        Connected-component boundary threshold in raw cost units. Default 50.
+    conncomp_sigma, conncomp_cycle_prob : float, optional
+        Set ``cost_threshold`` from a Gaussian-equivalent noise level or a
+        target per-edge one-cycle probability; see ``whirlwind.unwrap`` for
+        precedence. Default None.
+    min_size_px : int, optional
+        Discard connected components smaller than this many pixels. Default 100.
+    max_ncomps : int, optional
+        Maximum number of connected components to keep. Default 1024.
 
     Returns
     -------
@@ -97,7 +126,23 @@ def unwrap_whirlwind(
         # default phase solver is the verified single-tile linear MCF (ww-orig
         # parity + adaptive PD/SSP fallback);  Goldstein is off by default
         # (pass goldstein_alpha>0 to enable; under evaluation upstream).
-        unw, conncomp_arr = ww.unwrap(igram_arr, corr_arr, float(nlooks), mask=mask_arr)
+        unw, conncomp_arr = ww.unwrap(
+            igram_arr,
+            corr_arr,
+            float(nlooks),
+            mask=mask_arr,
+            interpolate=interpolate,
+            interp_cutoff=interp_cutoff,
+            interp_num_neighbors=interp_num_neighbors,
+            interp_max_radius=interp_max_radius,
+            interp_min_radius=interp_min_radius,
+            interp_alpha=interp_alpha,
+            cost_threshold=cost_threshold,
+            conncomp_sigma=conncomp_sigma,
+            conncomp_cycle_prob=conncomp_cycle_prob,
+            min_size_px=min_size_px,
+            max_ncomps=max_ncomps,
+        )
 
         logger.info("Writing unwrapped phase to raster file")
         with snaphu.io.Raster.create(

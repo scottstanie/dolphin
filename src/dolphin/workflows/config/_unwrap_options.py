@@ -161,6 +161,90 @@ class WhirlwindOptions(BaseModel, extra="forbid"):
         ge=1,
     )
 
+    # --- Spiral persistent-scatterer interpolation pre-pass ------------------
+    # Fills low-coherence valid pixels from a Gaussian distance-weighted average
+    # of nearby high-coherence phasors before the solve. Like Goldstein, it only
+    # informs the MCF: the integer cycle field is transferred back to the
+    # original wrapped phase, so per-pixel values are preserved.
+    interpolate: bool = Field(
+        default=False,
+        description=(
+            "Enable the spiral PS interpolation pre-pass: every valid pixel"
+            " with coherence below ``interp_cutoff`` is filled from nearby"
+            " high-coherence pixels before unwrapping."
+        ),
+    )
+    interp_cutoff: float = Field(
+        default=0.5,
+        description="Coherence below which a valid pixel is interpolated.",
+        ge=0.0,
+        le=1.0,
+    )
+    interp_num_neighbors: int = Field(
+        default=20,
+        description="Nearest high-coherence pixels averaged per interpolated pixel.",
+        ge=1,
+    )
+    interp_max_radius: int = Field(
+        default=51,
+        description="Maximum search radius (pixels) for the spiral neighbor search.",
+        ge=1,
+    )
+    interp_min_radius: int = Field(
+        default=0,
+        description="Minimum search radius (pixels); closer neighbors are skipped.",
+        ge=0,
+    )
+    interp_alpha: float = Field(
+        default=0.75,
+        description="Gaussian distance-weighting falloff for the neighbor average.",
+        gt=0.0,
+    )
+
+    # --- Connected-component cost / quality knobs ----------------------------
+    # An edge becomes a component boundary when its statistical cost is
+    # <= cost_threshold. Prefer the physical knobs (sigma / cycle_prob / coh
+    # floor) over tuning cost_threshold directly; if more than one is set,
+    # whirlwind resolves precedence as sigma > cycle_prob > cost_threshold.
+    cost_threshold: int = Field(
+        default=50,
+        description=(
+            "Connected-component boundary threshold in raw cost units. Larger"
+            " makes more boundaries and smaller, safer components."
+        ),
+        ge=0,
+    )
+    conncomp_sigma: float | None = Field(
+        default=None,
+        description=(
+            "Set ``cost_threshold`` from a Gaussian-equivalent noise level"
+            " (~3.5 reproduces the default 50). Higher is stricter (more"
+            " boundaries). Takes precedence over ``cost_threshold`` and"
+            " ``conncomp_cycle_prob``."
+        ),
+        gt=0.0,
+    )
+    conncomp_cycle_prob: float | None = Field(
+        default=None,
+        description=(
+            "Set ``cost_threshold`` from a target per-edge one-cycle-correction"
+            " probability (~2.4e-4 matches the default). Lower is stricter."
+            " Overridden by ``conncomp_sigma`` if both are set."
+        ),
+        gt=0.0,
+        lt=1.0,
+    )
+    min_size_px: int = Field(
+        default=100,
+        description="Discard connected components smaller than this many pixels.",
+        ge=1,
+    )
+    max_ncomps: int = Field(
+        default=1024,
+        description="Maximum number of connected components to keep (largest first).",
+        ge=1,
+    )
+
 
 class TophuOptions(BaseModel, extra="forbid"):
     ntiles: tuple[int, int] = Field(

@@ -229,6 +229,9 @@ def run(
         output_options=cfg.output_options,
         file_date_fmt=cfg.input_options.cslc_date_fmt,
         corr_window_size=corr_window_size,
+        run_burst_align=cfg.unwrap_options.run_burst_align,
+        burst_align_planar_ramp=cfg.unwrap_options.burst_align_planar_ramp,
+        burst_align_max_fringes=cfg.unwrap_options.burst_align_max_fringes,
     )
 
     # ###################################

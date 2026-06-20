@@ -206,6 +206,8 @@ def run(
     # Is there one best size? dependent on `half_window` or resolution?
     # For now, just pick a reasonable size
     corr_window_size = (11, 11)
+    row_looks, col_looks = cfg.phase_linking.half_window.to_looks()
+    nlooks = row_looks * col_looks
     stitched_paths = stitching_bursts.run(
         ifg_file_list=ifg_file_list,
         temp_coh_file_list=temp_coh_file_list,
@@ -219,6 +221,8 @@ def run(
         output_options=cfg.output_options,
         file_date_fmt=cfg.input_options.cslc_date_fmt,
         corr_window_size=corr_window_size,
+        correlation_from_crlb=cfg.interferogram_network.correlation_from_crlb,
+        nlooks=nlooks,
     )
 
     # ###################################
@@ -244,9 +248,6 @@ def run(
             timeseries_residual_paths=None,
             reference_point=None,
         )
-
-    row_looks, col_looks = cfg.phase_linking.half_window.to_looks()
-    nlooks = row_looks * col_looks
 
     # TODO: Not sure if i'll ever want more than one quality file
     # Dividing per-ministack in here would probably be complicated.

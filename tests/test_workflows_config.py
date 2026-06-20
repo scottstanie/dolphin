@@ -169,6 +169,26 @@ def test_inputs_defaults(dir_with_1_slc):
     assert isinstance(opts2.cslc_file_list[0], Path)
 
 
+def test_correlation_from_crlb_requires_write_crlb(dir_with_1_slc):
+    # correlation_from_crlb=True with write_crlb=False should fail validation
+    with pytest.raises(pydantic.ValidationError, match="write_crlb"):
+        config.DisplacementWorkflow(
+            cslc_file_list=dir_with_1_slc / "slclist.txt",
+            input_options={"subdataset": "data"},
+            phase_linking={"write_crlb": False},
+            interferogram_network={"correlation_from_crlb": True},
+        )
+
+    # With write_crlb=True (the default), it should be accepted
+    opts = config.DisplacementWorkflow(
+        cslc_file_list=dir_with_1_slc / "slclist.txt",
+        input_options={"subdataset": "data"},
+        interferogram_network={"correlation_from_crlb": True},
+    )
+    assert opts.interferogram_network.correlation_from_crlb is True
+    assert opts.phase_linking.write_crlb is True
+
+
 def test_inputs_bad_filename(tmp_path):
     # make a dummy file
     bad_cslc_file = tmp_path / "nonexistent_slclist.txt"

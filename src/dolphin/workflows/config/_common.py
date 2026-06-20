@@ -201,6 +201,15 @@ class InterferogramNetwork(BaseModel, extra="forbid"):
             " interferograms to form."
         ),
     )
+    correlation_from_crlb: bool = Field(
+        False,
+        description=(
+            "Estimate the interferometric correlation by inverting the phase-linking"
+            " Cramer-Rao Lower Bound (CRLB), rather than from a moving-window Gaussian"
+            " estimate of the output phase. This avoids spatially blurring the phase,"
+            " but requires `phase_linking.write_crlb=True`."
+        ),
+    )
 
 
 class TimeseriesOptions(BaseModel, extra="forbid"):

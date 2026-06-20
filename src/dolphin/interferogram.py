@@ -746,6 +746,161 @@ def estimate_interferometric_correlations(
     return output_paths
 
 
+def crlb_std_to_correlation(crlb_std: ArrayLike, nlooks: float) -> np.ndarray:
+    r"""Convert a CRLB phase standard deviation to an effective correlation.
+
+    Inverts the Rodriguez (1992) Cramer-Rao Lower Bound relation between
+    interferometric correlation $\gamma$ and phase variance $\sigma_\phi^2$,
+
+    \[
+        \sigma_\phi^{2} = \frac{1 - \gamma^{2}}{2 N_{L} \gamma^{2}}
+    \]
+
+    to solve for the "effective correlation"
+
+    \[
+        \gamma = \frac{1}{\sqrt{1 + 2 N_{L} \sigma_\phi^{2}}}
+    \]
+
+    This is the same relation ISCE2 uses to produce an effective (blurry)
+    correlation, except here $\sigma_\phi$ comes directly from the phase-linking
+    CRLB (derived from the estimated coherence matrix), so no spatial smoothing
+    of the output phase is required.
+
+    Parameters
+    ----------
+    crlb_std : ArrayLike
+        Phase-linking CRLB standard deviation (radians), e.g. from the
+        `crlb_*.tif` rasters produced during phase linking.
+    nlooks : float
+        Effective number of looks $N_L$ used to map the phase variance to a
+        correlation.
+
+    Returns
+    -------
+    np.ndarray
+        The effective correlation, in the range [0, 1].
+
+    """
+    variance = np.asarray(crlb_std, dtype="float64") ** 2
+    return (1.0 / np.sqrt(1.0 + 2.0 * nlooks * variance)).astype("float32")
+
+
+def create_correlation_from_crlb(
+    ifg_filenames: Sequence[Filename],
+    crlb_filenames: Sequence[Filename],
+    nlooks: float,
+    file_date_fmt: str = "%Y%m%d",
+    out_driver: str = "GTiff",
+    out_suffix: str = ".cor.tif",
+    options: Sequence[str] = io.DEFAULT_TIFF_OPTIONS,
+    keep_bits: int = 10,
+    num_workers: int = 3,
+) -> list[Path]:
+    r"""Create effective correlation files from phase-linking CRLB rasters.
+
+    For each interferogram, the per-date CRLB standard deviations (radians) of
+    the dates involved are combined into a phase variance, then converted to an
+    effective correlation using [`crlb_std_to_correlation`][dolphin.interferogram.crlb_std_to_correlation].
+
+    For a single-reference interferogram $\phi_n - \phi_{ref}$ with $\phi_{ref}$
+    fixed to 0, the variance is just $\sigma_n^2$ (the reference date has no CRLB
+    file / zero variance). For a short-baseline pair $\phi_n - \phi_m$, this uses
+    the diagonal approximation $\sigma_n^2 + \sigma_m^2$, which ignores the
+    (positive) cross-covariance $2\,\Sigma_{nm}$ and is therefore conservative
+    (it slightly under-estimates the effective correlation for short baselines).
+
+    Parameters
+    ----------
+    ifg_filenames : Sequence[Filename]
+        Paths to the (stitched) interferogram files needing correlation files.
+    crlb_filenames : Sequence[Filename]
+        Paths to the per-date CRLB rasters (e.g. ``crlb_20200101.tif``).
+    nlooks : float
+        Effective number of looks used in the CRLB-to-correlation conversion.
+    file_date_fmt : str
+        Format of dates contained in filenames. Default = "%Y%m%d".
+    out_driver : str, optional
+        Name of output GDAL driver, by default "GTiff".
+    out_suffix : str, optional
+        File suffix to use for correlation files, by default ".cor.tif".
+    options : Sequence[str], optional
+        GDAL Creation options for the output array.
+    keep_bits : int, optional
+        Number of bits to preserve in mantissa. Defaults to 10.
+    num_workers : int
+        Number of threads to use in parallel. Default = 3.
+
+    Returns
+    -------
+    list[Path]
+        Paths to newly written correlation files.
+
+    """
+    # Map a single date -> CRLB raster
+    date_to_crlb: dict[Any, Path] = {}
+    for f in crlb_filenames:
+        dates = get_dates(f, fmt=file_date_fmt)
+        if not dates:
+            continue
+        date_to_crlb[dates[0]] = Path(f)
+
+    path_tuples: list[tuple[Path, Path, list[Path]]] = []
+    output_paths: list[Path] = []
+    for fn in ifg_filenames:
+        ifg_path = Path(fn)
+        cor_path = ifg_path.with_suffix(out_suffix)
+        output_paths.append(cor_path)
+        if cor_path.exists():
+            logger.info(f"Skipping existing CRLB correlation for {ifg_path}")
+            continue
+        # Gather the CRLB rasters for the dates in this interferogram.
+        # A date with no CRLB file (e.g. the global reference) contributes 0.
+        ifg_dates = get_dates(ifg_path, fmt=file_date_fmt)
+        crlb_for_ifg = [date_to_crlb[d] for d in ifg_dates if d in date_to_crlb]
+        if not crlb_for_ifg:
+            logger.warning(f"No CRLB files found for dates in {ifg_path}; skipping")
+            continue
+        path_tuples.append((ifg_path, cor_path, crlb_for_ifg))
+
+    def process_ifg(args):
+        ifg_path, cor_path, crlb_paths = args
+        logger.debug(f"Creating CRLB correlation for {ifg_path} -> {cor_path}")
+        # Sum the per-date phase variances (diagonal approximation for pairs)
+        variance = None
+        for cp in crlb_paths:
+            sigma = io.load_gdal(cp).astype("float64")
+            variance = sigma**2 if variance is None else variance + sigma**2
+        cor = np.clip(1.0 / np.sqrt(1.0 + 2.0 * nlooks * variance), 0, 1)
+
+        # Match the valid-data mask of the interferogram so we don't introduce
+        # correlation where the phase is nodata.
+        ifg = io.load_gdal(ifg_path)
+        ifg_phase = np.angle(ifg) if np.iscomplexobj(ifg) else ifg
+        cor[np.isnan(ifg_phase)] = np.nan
+        cor[ifg == 0] = 0
+        cor = cor.astype("float32")
+
+        if keep_bits:
+            io.round_mantissa(cor, keep_bits=keep_bits)
+        io.write_arr(
+            arr=cor,
+            output_name=cor_path,
+            like_filename=ifg_path,
+            driver=out_driver,
+            options=options,
+        )
+
+    thread_map(
+        process_ifg,
+        path_tuples,
+        max_workers=num_workers,
+        desc="Creating CRLB correlations",
+    )
+
+    return output_paths
+
+
 def _create_vrt_conj(
     filename: Filename, output_filename: Filename, is_relative: bool = False
 ):

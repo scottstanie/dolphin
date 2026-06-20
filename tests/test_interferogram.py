@@ -10,8 +10,11 @@ from dolphin.interferogram import (
     Network,
     VRTInterferogram,
     _create_vrt_conj,
+    create_correlation_from_crlb,
+    crlb_std_to_correlation,
     estimate_correlation_from_phase,
 )
+from dolphin.timeseries import correlation_to_variance
 
 
 def test_derived_vrt_interferogram(slc_file_list):
@@ -310,6 +313,72 @@ def test_correlation_from_phase_vrtinterferogram_input(window_size, slc_file_lis
     ifg = VRTInterferogram(ref_slc=slc_file_list[0], sec_slc=slc_file_list[1])
     estimate_correlation_from_phase(ifg, window_size)
     # just checking it loads and runs
+
+
+def test_crlb_std_to_correlation_endpoints():
+    # Zero phase std -> perfect correlation
+    assert crlb_std_to_correlation(0.0, nlooks=100) == pytest.approx(1.0)
+    # Larger std -> lower correlation, and monotonically decreasing
+    cor = crlb_std_to_correlation(np.array([0.0, 0.1, 0.5, 1.0]), nlooks=25)
+    assert np.all(np.diff(cor) < 0)
+    assert np.all(cor <= 1.0) and np.all(cor >= 0.0)
+
+
+@pytest.mark.parametrize("gamma", [0.99, 0.8, 0.5, 0.3])
+def test_crlb_std_to_correlation_inverts_correlation_to_variance(gamma):
+    # crlb_std_to_correlation should invert timeseries.correlation_to_variance
+    nlooks = 25
+    variance = float(correlation_to_variance(np.array(gamma), nlooks))
+    recovered = crlb_std_to_correlation(np.sqrt(variance), nlooks=nlooks)
+    npt.assert_allclose(recovered, gamma, atol=1e-4)
+
+
+def test_create_correlation_from_crlb(tmp_path):
+    nlooks = 25
+    shape = (5, 5)
+    ref_date, sec_date = "20200101", "20200113"
+
+    # Single-reference ifg named with both dates; reference has no CRLB file
+    ifg_path = tmp_path / f"{ref_date}_{sec_date}.int.tif"
+    io.write_arr(arr=np.ones(shape, dtype="complex64"), output_name=ifg_path)
+
+    sigma = np.full(shape, 0.2, dtype="float32")
+    crlb_path = tmp_path / f"crlb_{sec_date}.tif"
+    io.write_arr(arr=sigma, output_name=crlb_path)
+
+    out_paths = create_correlation_from_crlb(
+        [ifg_path], crlb_filenames=[crlb_path], nlooks=nlooks, num_workers=1
+    )
+    assert len(out_paths) == 1
+    cor = io.load_gdal(out_paths[0])
+    expected = crlb_std_to_correlation(sigma, nlooks=nlooks)
+    npt.assert_allclose(cor, expected, atol=1e-3)
+
+
+def test_create_correlation_from_crlb_pair_sums_variance(tmp_path):
+    nlooks = 25
+    shape = (4, 4)
+    d1, d2 = "20200101", "20200113"
+
+    ifg_path = tmp_path / f"{d1}_{d2}.int.tif"
+    io.write_arr(arr=np.ones(shape, dtype="complex64"), output_name=ifg_path)
+
+    s1 = np.full(shape, 0.2, dtype="float32")
+    s2 = np.full(shape, 0.3, dtype="float32")
+    io.write_arr(arr=s1, output_name=tmp_path / f"crlb_{d1}.tif")
+    io.write_arr(arr=s2, output_name=tmp_path / f"crlb_{d2}.tif")
+
+    out_paths = create_correlation_from_crlb(
+        [ifg_path],
+        crlb_filenames=[tmp_path / f"crlb_{d1}.tif", tmp_path / f"crlb_{d2}.tif"],
+        nlooks=nlooks,
+        num_workers=1,
+    )
+    cor = io.load_gdal(out_paths[0])
+    # Diagonal approximation: variance = s1**2 + s2**2
+    expected_var = s1.astype("float64") ** 2 + s2.astype("float64") ** 2
+    expected = 1.0 / np.sqrt(1.0 + 2.0 * nlooks * expected_var)
+    npt.assert_allclose(cor, expected, atol=1e-3)
 
 
 def test_create_vrt_conj(tmp_path, slc_file_list_nc_wgs84):

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Add `interferogram_network.correlation_from_crlb` option to derive the interferometric correlation by inverting the phase-linking CRLB (avoids spatially blurring the phase). Requires `phase_linking.write_crlb=True`.
+
 ## [0.42.0](https://github.com/isce-framework/dolphin/compare/v0.41.0...v0.42.0) - 2025-08-19
 
 ### Added

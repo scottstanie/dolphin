@@ -13,7 +13,10 @@ from dolphin import stitching
 from dolphin._log import log_runtime
 from dolphin._overviews import ImageType, create_image_overviews, create_overviews
 from dolphin._types import Bbox
-from dolphin.interferogram import estimate_interferometric_correlations
+from dolphin.interferogram import (
+    create_correlation_from_crlb,
+    estimate_interferometric_correlations,
+)
 from dolphin.io import EXTRA_COMPRESSED_TIFF_OPTIONS, repack_raster
 
 from .config import OutputOptions
@@ -59,6 +62,8 @@ def run(
     output_options: OutputOptions,
     file_date_fmt: str = "%Y%m%d",
     corr_window_size: tuple[int, int] = (11, 11),
+    correlation_from_crlb: bool = False,
+    nlooks: float = 1.0,
     num_workers: int = 3,
 ) -> StitchedOutputs:
     """Stitch together spatial subsets from phase linking.
@@ -93,7 +98,15 @@ def run(
         default = "%Y%m%d"
     corr_window_size : tuple[int, int]
         Size of moving window (rows, cols) to use for estimating correlation.
+        Used only when `correlation_from_crlb` is False.
         Default = (11, 11)
+    correlation_from_crlb : bool
+        If True, derive the interferometric correlation by inverting the
+        phase-linking CRLB (using the stitched `crlb_*` rasters) instead of the
+        moving-window Gaussian estimate of the phase. Default = False.
+    nlooks : float
+        Effective number of looks used in the CRLB-to-correlation conversion.
+        Used only when `correlation_from_crlb` is True. Default = 1.0.
     num_workers : int
         Number of threads to use for stitching in parallel.
         Default = 3
@@ -127,13 +140,16 @@ def run(
     )
     stitched_ifg_paths = list(date_to_ifg_path.values())
 
-    # Estimate the interferometric correlation from the stitched interferogram
-    interferometric_corr_paths = estimate_interferometric_correlations(
-        stitched_ifg_paths,
-        window_size=corr_window_size,
-        num_workers=num_workers,
-        options=EXTRA_COMPRESSED_TIFF_OPTIONS,
-    )
+    # Estimate the interferometric correlation from the stitched interferogram.
+    # If `correlation_from_crlb`, this is deferred until after the CRLB rasters
+    # have been stitched (below).
+    if not correlation_from_crlb:
+        interferometric_corr_paths = estimate_interferometric_correlations(
+            stitched_ifg_paths,
+            window_size=corr_window_size,
+            num_workers=num_workers,
+            options=EXTRA_COMPRESSED_TIFF_OPTIONS,
+        )
 
     # Stitch the temporal coherence files by date
     date_to_temp_coh_path = stitching.merge_by_date(
@@ -202,6 +218,18 @@ def run(
         num_workers=num_workers,
     )
     stitched_crlb_files = list(date_to_crlb_path.values())
+
+    # Now that the CRLB rasters are stitched, derive the correlation from them
+    # (an alternative to the moving-window Gaussian estimate above).
+    if correlation_from_crlb:
+        interferometric_corr_paths = create_correlation_from_crlb(
+            stitched_ifg_paths,
+            crlb_filenames=stitched_crlb_files,
+            nlooks=nlooks,
+            file_date_fmt=file_date_fmt,
+            num_workers=num_workers,
+            options=EXTRA_COMPRESSED_TIFF_OPTIONS,
+        )
 
     # Stitch the closure phase files
     date_to_closure_phase_path = stitching.merge_by_date(

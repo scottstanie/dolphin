@@ -150,6 +150,19 @@ class DisplacementWorkflow(WorkflowBase):
         return self
 
     @model_validator(mode="after")
+    def _check_correlation_from_crlb(self: Self) -> Self:
+        if (
+            self.interferogram_network.correlation_from_crlb
+            and not self.phase_linking.write_crlb
+        ):
+            msg = (
+                "`interferogram_network.correlation_from_crlb=True` requires"
+                " `phase_linking.write_crlb=True`."
+            )
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
     def _check_input_files_exist(self) -> Self:
         if not self.require_cslc_files:
             return self

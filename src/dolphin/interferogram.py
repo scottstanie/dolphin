@@ -801,7 +801,8 @@ def create_correlation_from_crlb(
 
     For each interferogram, the per-date CRLB standard deviations (radians) of
     the dates involved are combined into a phase variance, then converted to an
-    effective correlation using [`crlb_std_to_correlation`][dolphin.interferogram.crlb_std_to_correlation].
+    effective correlation using
+    [`crlb_std_to_correlation`][dolphin.interferogram.crlb_std_to_correlation].
 
     For a single-reference interferogram $\phi_n - \phi_{ref}$ with $\phi_{ref}$
     fixed to 0, the variance is just $\sigma_n^2$ (the reference date has no CRLB
@@ -871,7 +872,8 @@ def create_correlation_from_crlb(
         for cp in crlb_paths:
             sigma = io.load_gdal(cp).astype("float64")
             variance = sigma**2 if variance is None else variance + sigma**2
-        cor = np.clip(1.0 / np.sqrt(1.0 + 2.0 * nlooks * variance), 0, 1)
+        assert variance is not None  # `crlb_paths` is non-empty (checked above)
+        cor = crlb_std_to_correlation(np.sqrt(variance), nlooks)
 
         # Match the valid-data mask of the interferogram so we don't introduce
         # correlation where the phase is nodata.
@@ -879,7 +881,6 @@ def create_correlation_from_crlb(
         ifg_phase = np.angle(ifg) if np.iscomplexobj(ifg) else ifg
         cor[np.isnan(ifg_phase)] = np.nan
         cor[ifg == 0] = 0
-        cor = cor.astype("float32")
 
         if keep_bits:
             io.round_mantissa(cor, keep_bits=keep_bits)

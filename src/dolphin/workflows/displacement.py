@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 # import contextlib
 import multiprocessing as mp
@@ -208,6 +209,13 @@ def run(
     corr_window_size = (11, 11)
     row_looks, col_looks = cfg.phase_linking.half_window.to_looks()
     nlooks = row_looks * col_looks
+    # The CRLB-derived correlation must be inverted with the *same* (conservative)
+    # number of looks used to build the CRLB std during phase linking, otherwise
+    # `crlb_std_to_correlation` no longer inverts `correlation_to_variance`. See
+    # `phase_link._core.run_cpl`: `num_looks = sqrt(half_window.y * half_window.x)`.
+    crlb_nlooks = math.sqrt(
+        cfg.phase_linking.half_window.y * cfg.phase_linking.half_window.x
+    )
     stitched_paths = stitching_bursts.run(
         ifg_file_list=ifg_file_list,
         temp_coh_file_list=temp_coh_file_list,
@@ -222,7 +230,7 @@ def run(
         file_date_fmt=cfg.input_options.cslc_date_fmt,
         corr_window_size=corr_window_size,
         correlation_from_crlb=cfg.interferogram_network.correlation_from_crlb,
-        nlooks=nlooks,
+        nlooks=crlb_nlooks,
     )
 
     # ###################################

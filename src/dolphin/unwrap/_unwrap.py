@@ -495,6 +495,8 @@ def unwrap(
             conncomp_cycle_prob=ww_opts.conncomp_cycle_prob,
             min_size_px=ww_opts.min_size_px,
             max_ncomps=ww_opts.max_ncomps,
+            bridge=ww_opts.bridge,
+            solve_min_coherence=ww_opts.solve_min_coherence,
         )
     elif (unwrap_method == UnwrapMethod.ICU) or (unwrap_method == UnwrapMethod.PHASS):
         tophu_opts = unwrap_options.tophu_options

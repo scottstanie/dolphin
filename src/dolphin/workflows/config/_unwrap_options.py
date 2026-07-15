@@ -245,6 +245,29 @@ class WhirlwindOptions(BaseModel, extra="forbid"):
         ge=1,
     )
 
+    # --- Phase-solve / component knobs ---------------------------------------
+    bridge: bool = Field(
+        default=True,
+        description=(
+            "Bridge disjoint connected components across low-coherence gaps so"
+            " they share a consistent integer cycle. Disable to keep components"
+            " fully independent."
+        ),
+    )
+    solve_min_coherence: float | Literal["auto"] | None = Field(
+        default="auto",
+        description=(
+            "Coherence floor for the MCF phase solve; pixels below it are treated"
+            " as unreliable. ``'auto'`` lets ww derive it from the data, a float in"
+            " [0, 1] sets it explicitly, ``None`` disables the floor."
+        ),
+    )
+    # NOTE: ww's internal goldstein_alpha / goldstein_psize are intentionally NOT
+    # exposed here. dolphin's own ``UnwrapOptions.run_goldstein`` pre-filters the
+    # ifg *before* it reaches any backend (see unwrap/_unwrap.py), so enabling
+    # ww's internal Goldstein on top would double-filter. Route Goldstein through
+    # the shared dolphin pre-process instead.
+
 
 class TophuOptions(BaseModel, extra="forbid"):
     ntiles: tuple[int, int] = Field(

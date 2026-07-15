@@ -42,6 +42,8 @@ def unwrap_whirlwind(
     conncomp_cycle_prob: Optional[float] = None,
     min_size_px: int = 100,
     max_ncomps: int = 1024,
+    bridge: bool = True,
+    solve_min_coherence: float | str | None = "auto",
 ) -> tuple[Path, Path]:
     """Unwrap an interferogram and grow conncomps using whirlwind.
 
@@ -86,6 +88,12 @@ interp_alpha
         Discard connected components smaller than this many pixels. Default 100.
     max_ncomps : int, optional
         Maximum number of connected components to keep. Default 1024.
+    bridge : bool, optional
+        Bridge disjoint connected components across low-coherence gaps so they
+        share a consistent integer cycle. Default True.
+    solve_min_coherence : float or {"auto"} or None, optional
+        Coherence floor for the MCF phase solve; see ``whirlwind.unwrap``.
+        ``"auto"`` lets ww derive it from the data. Default "auto".
 
     Returns
     -------
@@ -142,6 +150,8 @@ interp_alpha
             conncomp_cycle_prob=conncomp_cycle_prob,
             min_size_px=min_size_px,
             max_ncomps=max_ncomps,
+            bridge=bridge,
+            solve_min_coherence=solve_min_coherence,
         )
 
         logger.info("Writing unwrapped phase to raster file")

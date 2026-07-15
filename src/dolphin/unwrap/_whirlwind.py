@@ -44,6 +44,8 @@ def unwrap_whirlwind(
     max_ncomps: int = 1024,
     bridge: bool = True,
     solve_min_coherence: float | str | None = "auto",
+    goldstein_alpha: float = 0.0,
+    goldstein_psize: int = 64,
 ) -> tuple[Path, Path]:
     """Unwrap an interferogram and grow conncomps using whirlwind.
 
@@ -94,6 +96,11 @@ interp_alpha
     solve_min_coherence : float or {"auto"} or None, optional
         Coherence floor for the MCF phase solve; see ``whirlwind.unwrap``.
         ``"auto"`` lets ww derive it from the data. Default "auto".
+    goldstein_alpha : float, optional
+        Strength of ww's internal Goldstein pre-filter. 0 disables it.
+        Default 0.0.
+    goldstein_psize : int, optional
+        FFT patch size for ww's internal Goldstein filter. Default 64.
 
     Returns
     -------
@@ -152,6 +159,8 @@ interp_alpha
             max_ncomps=max_ncomps,
             bridge=bridge,
             solve_min_coherence=solve_min_coherence,
+            goldstein_alpha=goldstein_alpha,
+            goldstein_psize=goldstein_psize,
         )
 
         logger.info("Writing unwrapped phase to raster file")

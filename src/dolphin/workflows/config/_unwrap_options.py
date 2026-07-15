@@ -262,11 +262,26 @@ class WhirlwindOptions(BaseModel, extra="forbid"):
             " [0, 1] sets it explicitly, ``None`` disables the floor."
         ),
     )
-    # NOTE: ww's internal goldstein_alpha / goldstein_psize are intentionally NOT
-    # exposed here. dolphin's own ``UnwrapOptions.run_goldstein`` pre-filters the
-    # ifg *before* it reaches any backend (see unwrap/_unwrap.py), so enabling
-    # ww's internal Goldstein on top would double-filter. Route Goldstein through
-    # the shared dolphin pre-process instead.
+    # --- Internal Goldstein pre-filter ---------------------------------------
+    # ww applies Goldstein filtering internally (fast Rust). For whirlwind,
+    # dolphin routes its ``run_goldstein`` request here instead of running the
+    # slower Python pre-process (see unwrap/_unwrap.py), so there is no
+    # double-filtering. ``run_goldstein`` (using ``preprocess_options.alpha``)
+    # takes precedence over ``goldstein_alpha`` when both are set.
+    goldstein_alpha: float = Field(
+        default=0.0,
+        description=(
+            "Goldstein filter strength for ww's internal pre-filter. 0 disables"
+            " it. Ignored when ``UnwrapOptions.run_goldstein`` is set (that path"
+            " supplies alpha from ``preprocess_options.alpha``)."
+        ),
+        ge=0.0,
+    )
+    goldstein_psize: int = Field(
+        default=64,
+        description="FFT patch size for ww's internal Goldstein filter.",
+        ge=1,
+    )
 
 
 class TophuOptions(BaseModel, extra="forbid"):

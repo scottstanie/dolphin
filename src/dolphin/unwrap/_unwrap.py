@@ -27,7 +27,6 @@ from ._constants import (
     UNW_SUFFIX_ZEROED,
 )
 from ._snaphu_py import grow_conncomp_snaphu, unwrap_snaphu_py
-from ._spurs import unwrap_spurs
 from ._tophu import multiscale_unwrap
 from ._unwrap_3d import unwrap_spurt
 from ._utils import create_combined_mask, set_nodata_values
@@ -496,18 +495,6 @@ def unwrap(
             conncomp_cycle_prob=ww_opts.conncomp_cycle_prob,
             min_size_px=ww_opts.min_size_px,
             max_ncomps=ww_opts.max_ncomps,
-        )
-    elif unwrap_method == UnwrapMethod.SPURS:
-        unw_path, conncomp_path = unwrap_spurs(
-            unwrapper_ifg_filename,
-            corr_filename,
-            unwrapper_unw_filename,
-            nlooks,
-            mask_file=combined_mask_file,
-            zero_where_masked=unwrap_options.zero_where_masked,
-            unw_nodata=unw_nodata,
-            ccl_nodata=ccl_nodata,
-            scratchdir=scratchdir,
         )
     elif (unwrap_method == UnwrapMethod.ICU) or (unwrap_method == UnwrapMethod.PHASS):
         tophu_opts = unwrap_options.tophu_options

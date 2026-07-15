@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Optional
 
 import tyro
+from opera_utils import is_remote_url
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -246,10 +247,7 @@ class PhaseLinkingOptions(BaseModel, extra="forbid"):
 
 
 class InterferogramNetwork(BaseModel, extra="forbid"):
-    """Options to determine the type of network for interferogram formation.
-
-    If no parameters passed, uses single-reference network with `reference_idx=0`.
-    """
+    """Options to determine the type of network for interferogram formation."""
 
     _directory: Path = PrivateAttr(Path("interferograms"))
 
@@ -387,6 +385,23 @@ class InputOptions(BaseModel, extra="forbid"):
             "Radar wavelength (in meters) of the transmitted data. used to convert the"
             " units in the rasters in `timeseries/` to from radians to meters. If None"
             " and sensor is not recognized, outputs remain in radians."
+        ),
+    )
+    azimuth_blocks: int = Field(
+        1,
+        description=(
+            "When the input does not match OPERA-burst naming (e.g. NISAR), split"
+            " each input frame into this many azimuth blocks and process each block"
+            " as a synthetic burst. Default 1 = no splitting."
+        ),
+        ge=1,
+    )
+    halo_rows: Optional[int] = Field(
+        None,
+        description=(
+            "Halo (input rows) on each side of an azimuth block. Default:"
+            " max(half_window_y, similarity_search_radius * stride_y,"
+            " (corr_window_y // 2) * stride_y) + 5."
         ),
     )
 
@@ -598,8 +613,12 @@ def _read_file_list_or_glob(cls, value):  # noqa: ARG001
             filenames = [Path(f) for f in v_path.read_text().splitlines()]
 
             # If given as relative paths, make them relative to the text file
+            # Skip this for remote URLs (https://, http://, s3://)
             parent = v_path.parent
-            return [parent / f if not f.is_absolute() else f for f in filenames]
+            return [
+                parent / f if (not f.is_absolute() and not is_remote_url(f)) else f
+                for f in filenames
+            ]
         else:
             msg = f"Input file list {v_path} does not exist or is not a file."
             raise ValueError(msg)

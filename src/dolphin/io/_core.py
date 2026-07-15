@@ -302,12 +302,86 @@ def format_nc_filename(filename: Filename, ds_name: Optional[str] = None) -> str
         msg = "Must provide dataset name for HDF5/NetCDF files"
         raise ValueError(msg)
 
-    basename = Path(fname_clean).name.upper()
-    if fname_clean.endswith(".h5") and basename.startswith("NISAR_"):
-        driver = "HDF5"
-    else:
-        driver = "NETCDF"
+    driver = "HDF5" if _is_nisar_h5(fname_clean) else "NETCDF"
     return f'{driver}:"{filename}":"//{ds_name.lstrip("/")}"'
+
+
+def _is_nisar_h5(filename: Filename) -> bool:
+    """Detect NISAR raw HDF5 by filename prefix.
+
+    The single source of truth for the NISAR driver-prefix heuristic in
+    `format_nc_filename`: NISAR raw HDF5 lacks CF metadata, so it needs the
+    bare ``HDF5`` driver rather than ``NETCDF``.
+    """
+    s = str(filename)
+    return s.endswith(".h5") and Path(s).name.upper().startswith("NISAR_")
+
+
+def read_nisar_grid_metadata(
+    filename: Filename, subdataset: str
+) -> tuple[int, int, tuple[float, ...], int, str]:
+    """Read NISAR GSLC grid metadata via h5py (local) or.
+
+    earthaccess+h5netcdf (remote).
+
+    NISAR's GSLC files store the projection in a sibling ``projection``
+    dataset and grid coordinates in ``xCoordinates`` / ``yCoordinates``
+    (cell centers) inside the same group as the polarization dataset.
+    GDAL's HDF5 driver doesn't expose any of this — it returns an
+    identity geotransform and empty projection — so the only reliable
+    path is to read it directly.
+
+    Honors the data dataset's ``grid_mapping`` attribute when present;
+    falls back to the conventional ``projection`` dataset name.
+
+    Returns ``(nx, ny, geotransform, epsg, projection_wkt)``.
+    """
+    import re
+    from pathlib import PurePosixPath
+
+    from opera_utils import is_remote_url
+    from opera_utils._remote import open_h5 as open_remote_h5
+
+    file_str = str(filename)
+    # Normalize malformed URLs missing one slash (e.g., https:/ -> https://)
+    file_str = re.sub(r"^(https?|s3):/(?!/)", r"\1://", file_str)
+    grid_path = str(PurePosixPath(subdataset).parent)
+    from osgeo import osr
+
+    if is_remote_url(file_str):
+        if file_str.startswith("s3://"):
+            raise ValueError(
+                "Direct S3 links are not supported out-of-region."
+                " Please pass the HTTPS URL equivalent."
+            )
+        h5_open = open_remote_h5(file_str)
+    else:
+        h5_open = h5py.File(file_str, "r")
+
+    with h5_open as f:
+        dset = f[subdataset]
+        proj_name = dset.attrs.get("grid_mapping", "projection")
+        if isinstance(proj_name, bytes):
+            proj_name = proj_name.decode()
+        proj_raw = f[f"{grid_path}/{proj_name}"][()]
+        epsg = int(proj_raw.decode()) if isinstance(proj_raw, bytes) else int(proj_raw)
+        x_coords = f[f"{grid_path}/xCoordinates"][:]
+        y_coords = f[f"{grid_path}/yCoordinates"][:]
+        dx = float(f[f"{grid_path}/xCoordinateSpacing"][()])
+        dy = float(f[f"{grid_path}/yCoordinateSpacing"][()])
+
+    # 3. GeoTransform Calculation (Identical for both local and remote)
+    gt = (
+        float(x_coords[0]) - dx / 2.0,
+        dx,
+        0.0,
+        float(y_coords[0]) - dy / 2.0,
+        0.0,
+        dy,
+    )
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(epsg)
+    return len(x_coords), len(y_coords), gt, epsg, srs.ExportToWkt()
 
 
 def copy_projection(src_file: Filename, dst_file: Filename) -> None:

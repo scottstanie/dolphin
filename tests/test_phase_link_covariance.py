@@ -156,7 +156,7 @@ def test_estimate_stack_covariance_neighbors_masked(slcs):
 
 def test_coh_mat_single_float_weights(slcs):
     """Test that float weights work correctly for Gaussian multilooking."""
-    num_slc, rows, cols = slcs.shape
+    num_slc, _rows, cols = slcs.shape
     slc_samples = slcs.reshape(num_slc, -1)
     nsamps = slc_samples.shape[1]
 
@@ -210,7 +210,10 @@ def test_estimate_stack_covariance_gaussian_weights():
 
     # Compute covariance with Gaussian weights
     C_gaussian = covariance.estimate_stack_covariance(
-        slc_stack, half_window=half_window, strides=strides, neighbor_arrays=gaussian_weights
+        slc_stack,
+        half_window=half_window,
+        strides=strides,
+        neighbor_arrays=gaussian_weights,
     )
 
     # Check output shape

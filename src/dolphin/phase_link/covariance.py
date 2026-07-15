@@ -129,6 +129,7 @@ def coh_mat_single(
     -------
     Array
         Coherence matrix with shape (n_slc, n_slc).
+
     """
     _nslc, nsamps = slc_samples.shape
 

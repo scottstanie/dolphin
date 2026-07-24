@@ -202,24 +202,62 @@ class WhirlwindOptions(BaseModel, extra="forbid"):
     )
 
     # --- Connected-component cost / quality knobs ----------------------------
-    # An edge becomes a component boundary when its statistical cost is
-    # <= cost_threshold. Prefer the physical knobs (sigma / cycle_prob / coh
-    # floor) over tuning cost_threshold directly; if more than one is set,
-    # whirlwind resolves precedence as sigma > cycle_prob > cost_threshold.
+    conncomp_algorithm: Literal["snaphu", "linear"] = Field(
+        default="snaphu",
+        description=(
+            "Connected-component grow algorithm. ``'snaphu'`` uses the default"
+            " ambiguity-wiggle reliability grow; ``'linear'`` uses the older"
+            " coherence-cost grow."
+        ),
+    )
+    conncomp_min_coherence: float | Literal["auto"] | None = Field(
+        default=None,
+        description=(
+            "For the ``'snaphu'`` grow, label pixels below this coherence as"
+            " background. ``None`` (default) disables the floor and uses"
+            " ``conncomp_reliability``; ``'auto'`` uses ww's looks-aware floor;"
+            " a float in [0, 1] sets it explicitly."
+        ),
+    )
+    conncomp_reliability: float = Field(
+        default=0.5,
+        description=(
+            "Conservativeness of the ``'snaphu'`` grow, in inverse-variance"
+            " (``1 / sigma2``) units: an edge becomes a component boundary when"
+            " a one-cycle ambiguity flip across it costs no more than this. The"
+            " default 0.5 is about a coherence-0.1 floor, dropping decorrelated"
+            " water and near-noise while keeping real low-coherence land. 0"
+            " labels nearly every unwrapped pixel. Used only when"
+            " ``conncomp_min_coherence`` is ``None``."
+        ),
+        ge=0.0,
+    )
+    conncomp_thicken: bool = Field(
+        default=True,
+        description=(
+            "SNAPHU ``ThickenCosts`` behavior for the ``'snaphu'`` grow: smooth"
+            " each edge's cut strength laterally before cutting, so a one-pixel"
+            " reliable bridge through a wide unreliable region no longer"
+            " connects the two sides. Production SNAPHU always thickens."
+        ),
+    )
+    # The remaining cost knobs apply only to the legacy `linear` grow. If more
+    # than one is set, whirlwind resolves precedence as
+    # sigma > cycle_prob > cost_threshold.
     cost_threshold: int = Field(
         default=50,
         description=(
-            "Connected-component boundary threshold in raw cost units. Larger"
-            " makes more boundaries and smaller, safer components."
+            "For the ``'linear'`` grow, the component-boundary threshold in raw"
+            " cost units. Larger makes more boundaries and smaller components."
         ),
         ge=0,
     )
     conncomp_sigma: float | None = Field(
         default=None,
         description=(
-            "Set ``cost_threshold`` from a Gaussian-equivalent noise level"
-            " (~3.5 reproduces the default 50). Higher is stricter (more"
-            " boundaries). Takes precedence over ``cost_threshold`` and"
+            "For the ``'linear'`` grow, set ``cost_threshold`` from a"
+            " Gaussian-equivalent noise level (~3.5 reproduces the default 50)."
+            " Higher is stricter. Takes precedence over ``cost_threshold`` and"
             " ``conncomp_cycle_prob``."
         ),
         gt=0.0,
@@ -227,9 +265,9 @@ class WhirlwindOptions(BaseModel, extra="forbid"):
     conncomp_cycle_prob: float | None = Field(
         default=None,
         description=(
-            "Set ``cost_threshold`` from a target per-edge one-cycle-correction"
-            " probability (~2.4e-4 matches the default). Lower is stricter."
-            " Overridden by ``conncomp_sigma`` if both are set."
+            "For the ``'linear'`` grow, set ``cost_threshold`` from a target"
+            " per-edge one-cycle-correction probability (~2.4e-4 matches the"
+            " default). Lower is stricter; ``conncomp_sigma`` takes precedence."
         ),
         gt=0.0,
         lt=1.0,
@@ -254,14 +292,16 @@ class WhirlwindOptions(BaseModel, extra="forbid"):
             " fully independent."
         ),
     )
-    solve_min_coherence: float | Literal["auto"] | None = Field(
-        default="auto",
-        description=(
-            "Coherence floor for the MCF phase solve; pixels below it are treated"
-            " as unreliable. ``'auto'`` lets ww derive it from the data, a float in"
-            " [0, 1] sets it explicitly, ``None`` disables the floor."
-        ),
-    )
+
+    @field_validator("conncomp_min_coherence")
+    @classmethod
+    def _validate_conncomp_min_coherence(
+        cls, value: float | Literal["auto"] | None
+    ) -> float | Literal["auto"] | None:
+        if isinstance(value, float) and not 0.0 <= value <= 1.0:
+            raise ValueError("conncomp_min_coherence must be between 0 and 1")
+        return value
+
     # --- Internal Goldstein pre-filter ---------------------------------------
     # ww applies Goldstein filtering internally (fast Rust). For whirlwind,
     # dolphin routes its ``run_goldstein`` request here instead of running the

@@ -16,7 +16,10 @@ from dolphin._types import HalfWindow, Strides
 from dolphin.utils import take_looks
 
 from . import covariance, crlb, metrics
-from ._closure_phase import compute_nearest_closure_phases_batch
+from ._closure_phase import (
+    closure_phase_coefficient,
+    compute_nearest_closure_phases_batch,
+)
 from ._eigenvalues import eigh_largest_stack, eigh_smallest_stack
 from ._ps_filling import fill_ps_pixels
 
@@ -62,6 +65,14 @@ class PhaseLinkOutput(NamedTuple):
 
     closure_phases: np.ndarray
     """The closure phases at each pixel, for N-2 images."""
+
+    closure_phase_coh: np.ndarray
+    """Weighted closure-phase coefficient (gamma_CPw) at each pixel.
+
+    A method-independent reliability indicator in [0, 1] computed directly from
+    the sample coherence matrix (Heimpel et al. 2026, Eq. 3.16-3.17). Equals 1
+    for an exact rank-1 linkage and 0 for fully decorrelated noise.
+    """
 
 
 def run_phase_linking(
@@ -233,9 +244,11 @@ def run_phase_linking(
         slcs_decimated = decimate(slc_stack, strides)
         cpx_phase = np.exp(1j * np.angle(cpx_phase)) * np.abs(slcs_decimated)
 
+    closure_phase_coh = np.array(cpl_out.closure_phase_coh)
     # Finally, ensure the nodata regions are 0
     cpx_phase[:, mask_looked] = np.nan
     temp_coh[mask_looked] = np.nan
+    closure_phase_coh[mask_looked] = np.nan
 
     return PhaseLinkOutput(
         cpx_phase=cpx_phase,
@@ -246,6 +259,7 @@ def run_phase_linking(
         estimator=np.asarray(cpl_out.estimator),
         crlb_std_dev=np.array(cpl_out.crlb_std_dev),
         closure_phases=np.asarray(cpl_out.closure_phases),
+        closure_phase_coh=closure_phase_coh,
     )
 
 
@@ -337,6 +351,7 @@ def run_cpl(
         C_arrays = C_arrays.at[:, :, l_rows, l_cols].set(0.0 + 0j)
 
     closure_phases = compute_nearest_closure_phases_batch(C_arrays)
+    closure_phase_coh = closure_phase_coefficient(C_arrays)
     # For a more conservative uncertainty estimate, use a smaller number of looks
     # rather than `num_looks = (2 * half_window[0] + 1) * (2 * half_window[1] + 1)`
     num_looks = math.sqrt(half_window[0] * half_window[1])
@@ -373,6 +388,7 @@ def run_cpl(
         estimator=estimator,
         crlb_std_dev=crlb_std_dev_reshaped,
         closure_phases=closure_phases,
+        closure_phase_coh=closure_phase_coh,
     )
 
 

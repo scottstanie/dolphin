@@ -73,6 +73,30 @@ def test_numpy_vs_jax(example: str, aps_var: float) -> None:
     np.testing.assert_allclose(std_np, std_jax, rtol=5e-4, atol=1e-6)
 
 
+@pytest.mark.parametrize("aps_var", [0.0, 1e-2])
+def test_batched_jax(aps_var: float) -> None:
+    """Batched CRLB solves should avoid deprecated batched-vector solves."""
+    matrices = np.stack(_examples(N=9))
+    num_looks = 10
+    expected = np.stack(
+        [compute_lower_bound_std(C, num_looks, aps_var) for C in matrices]
+    )
+
+    actual = np.asarray(
+        compute_crlb_jax(
+            jnp.asarray(matrices),
+            num_looks=num_looks,
+            reference_idx=0,
+            aps_variance=aps_var,
+            gamma_jitter=0.0,
+            fim_jitter=0.0,
+            mask_zero_blocks=False,
+        )
+    )
+
+    np.testing.assert_allclose(expected, actual, rtol=5e-4, atol=1e-6)
+
+
 def test_large_n_no_nans() -> None:
     """Test CRLB computation with large N (~100) and verify no NaNs are produced."""
     N = 100

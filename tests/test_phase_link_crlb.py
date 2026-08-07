@@ -98,7 +98,7 @@ def test_batched_jax(aps_var: float) -> None:
 
 
 def test_large_n_no_nans() -> None:
-    """Test CRLB computation with large N (~100) and verify no NaNs are produced."""
+    """Test regularized stability and unregularized agreement for large N."""
     N = 100
     C = _get_example("ar1", N)
     num_looks = 10
@@ -111,8 +111,8 @@ def test_large_n_no_nans() -> None:
     assert std_np[0] == 0.0, "Reference epoch should have zero std"
     assert np.all(std_np[1:] > 0), "All non-reference epochs should have positive std"
 
-    # Test JAX implementation
-    std_jax = np.asarray(
+    # Test the regularized JAX implementation for numerical stability
+    std_jax_regularized = np.asarray(
         compute_crlb_jax(
             jnp.asarray(C),
             num_looks=num_looks,
@@ -122,13 +122,23 @@ def test_large_n_no_nans() -> None:
             fim_jitter=1e-6,
         )
     )
-    assert not np.any(np.isnan(std_jax)), "JAX implementation produced NaNs"
-    assert std_jax.shape == (N,), f"Expected shape ({N},), got {std_jax.shape}"
-    assert std_jax[0] == 0.0, "Reference epoch should have zero std"
-    assert np.all(std_jax[1:] > 0), "All non-reference epochs should have positive std"
+    assert not np.isnan(std_jax_regularized).any()
+    assert std_jax_regularized.shape == (N,)
+    assert std_jax_regularized[0] == 0.0
+    assert np.all(std_jax_regularized[1:] > 0)
 
-    # Verify they are reasonably close
-    np.testing.assert_allclose(std_np, std_jax, rtol=5e-3, atol=1e-5)
+    # Compare equivalent unregularized calculations
+    std_jax_unregularized = np.asarray(
+        compute_crlb_jax(
+            jnp.asarray(C),
+            num_looks=num_looks,
+            reference_idx=0,
+            aps_variance=aps_var,
+            gamma_jitter=0.0,
+            fim_jitter=0.0,
+        )
+    )
+    np.testing.assert_allclose(std_np, std_jax_unregularized, rtol=5e-4, atol=1e-5)
 
 
 @pytest.mark.parametrize("num_acq", [10, 25])

@@ -61,6 +61,45 @@ def test_estimation(C_truth, slc_samples, use_evd, baseline_lag):
     npt.assert_array_almost_equal(est_mle_verify, est_phase, decimal=1)
 
 
+@pytest.mark.parametrize("n_eigenvectors", [1, 2, 3])
+def test_run_evd_cpl(slc_samples, n_eigenvectors):
+    slc_stack = slc_samples.reshape(NUM_ACQ, 11, 11)
+    hw, st = HalfWindow(x=5, y=5), Strides(x=1, y=1)
+
+    out = _core.run_evd_cpl(slc_stack, hw, st, n_eigenvectors=n_eigenvectors)
+    assert isinstance(out, _core.EvdMultiScattererOutput)
+    # Leading axis is the eigenvector (scatterer) index
+    assert out.cpx_phase.shape == (n_eigenvectors, NUM_ACQ, 11, 11)
+    assert out.temp_coh.shape == (n_eigenvectors, 11, 11)
+    assert out.eigenvalues.shape == (n_eigenvectors, 11, 11)
+
+    eigenvalues = np.asarray(out.eigenvalues)
+    # Eigenvalues are returned largest-to-smallest along the scatterer axis
+    assert np.all(np.diff(eigenvalues, axis=0) <= 1e-4)
+    # Temporal coherence is a goodness-of-fit in [0, 1]
+    temp_coh = np.asarray(out.temp_coh)
+    assert np.all((temp_coh >= 0) & (temp_coh <= 1 + 1e-5))
+
+    # The dominant scatterer (index 0) must reproduce the standard EVD estimate
+    pl_evd = _core.run_cpl(slc_stack, hw, st, use_evd=True)
+    npt.assert_allclose(eigenvalues[0], np.asarray(pl_evd.eigenvalues), atol=2e-5)
+    phase_diff = np.angle(
+        np.asarray(out.cpx_phase[0]) * np.conj(np.asarray(pl_evd.cpx_phase))
+    )
+    assert np.max(np.abs(phase_diff)) < 1e-4
+
+    # The dominant scatterer should also be the higher-coherence solution
+    assert temp_coh[0].mean() >= temp_coh[-1].mean()
+
+
+def test_run_evd_cpl_invalid_n(slc_samples):
+    slc_stack = slc_samples.reshape(NUM_ACQ, 11, 11)
+    hw = HalfWindow(x=5, y=5)
+    for bad in (0, NUM_ACQ + 1):
+        with pytest.raises(ValueError, match="n_eigenvectors"):
+            _core.run_evd_cpl(slc_stack, hw, n_eigenvectors=bad)
+
+
 def test_masked(slc_samples, C_truth):
     slc_stack = slc_samples.copy().reshape(NUM_ACQ, 11, 11)
     mask = np.zeros((11, 11), dtype=bool)

@@ -8,7 +8,7 @@ from typing import NamedTuple, Optional
 
 import jax.numpy as jnp
 import numpy as np
-from jax import Array, jit, lax
+from jax import Array, jit, lax, vmap
 from jax.scipy.linalg import cho_factor, cho_solve
 from jax.typing import ArrayLike
 
@@ -17,7 +17,11 @@ from dolphin.utils import take_looks
 
 from . import covariance, crlb, metrics
 from ._closure_phase import compute_nearest_closure_phases_batch
-from ._eigenvalues import eigh_largest_stack, eigh_smallest_stack
+from ._eigenvalues import (
+    eigh_largest_n_stack,
+    eigh_largest_stack,
+    eigh_smallest_stack,
+)
 from ._ps_filling import fill_ps_pixels
 
 logger = logging.getLogger("dolphin")
@@ -62,6 +66,26 @@ class PhaseLinkOutput(NamedTuple):
 
     closure_phases: np.ndarray
     """The closure phases at each pixel, for N-2 images."""
+
+
+class EvdMultiScattererOutput(NamedTuple):
+    """Output of the multi-scatterer EVD solver ([`run_evd_cpl`][]).
+
+    Holds the phase-linked estimate for the top-N eigenvectors of the coherence
+    matrix, following the CAESAR decomposition [@Fornaro2015CAESARApproachBased].
+    Index 0 of the leading axis is the dominant scatterer (equivalent to the
+    standard ``use_evd=True`` estimate), index 1 the second ("other") scatterer,
+    and so on.
+    """
+
+    cpx_phase: np.ndarray
+    """Estimated linked phase per eigenvector, shape (n_eigenvectors, nslc, rows, cols)."""  # noqa: E501
+
+    temp_coh: np.ndarray
+    """Temporal coherence per eigenvector, shape (n_eigenvectors, rows, cols)."""
+
+    eigenvalues: np.ndarray
+    """The largest `n_eigenvectors` eigenvalues, shape (n_eigenvectors, rows, cols)."""
 
 
 def run_phase_linking(
@@ -532,6 +556,145 @@ def process_coherence_matrices(
     evd_estimate = eig_vecs * jnp.exp(-1j * jnp.angle(ref[:, :, None]))
 
     return evd_estimate, eig_vals, estimator.astype("uint8"), crlb_std_dev
+
+
+def run_evd_cpl(
+    slc_stack: np.ndarray,
+    half_window: HalfWindow,
+    strides: Strides = DEFAULT_STRIDES,
+    *,
+    n_eigenvectors: int = 2,
+    reference_idx: int = 0,
+    neighbor_arrays: Optional[np.ndarray] = None,
+    baseline_lag: Optional[int] = None,
+) -> EvdMultiScattererOutput:
+    """Run EVD phase linking and return the top-N eigenvector estimates.
+
+    This extends the standard EVD estimator (the dominant eigenvector of the
+    coherence matrix) to the leading `n_eigenvectors` eigenvectors, following the
+    CAESAR covariance-matrix decomposition [@Fornaro2015CAESARApproachBased].
+    The dominant eigenvector (index 0) recovers the strongest scattering
+    mechanism, and the following eigenvectors recover the secondary ("other")
+    scatterers within each resolution cell.
+
+    This helper is intentionally separate from [`run_cpl`][] /
+    [`run_phase_linking`][] and the `single.py` workflow: it is a research entry
+    point for extracting multiple scatterers rather than a drop-in replacement
+    for the single-scatterer phase-linking outputs.
+
+    Parameters
+    ----------
+    slc_stack : np.ndarray
+        The SLC stack, with shape (n_slc, n_rows, n_cols).
+    half_window : HalfWindow, or tuple[int, int]
+        A (named) tuple of (y, x) sizes for the half window.
+        The full window size is 2 * half_window + 1 for x, y.
+    strides : tuple[int, int], optional
+        The (y, x) strides (in pixels) to use for the sliding window.
+        By default (1, 1).
+    n_eigenvectors : int, optional
+        Number of leading eigenvectors (scatterers) to return, by default 2.
+        Must be at least 1 and no greater than `n_slc`.
+    reference_idx : int, optional
+        The index of the reference acquisition, by default 0.
+        Each eigenvector's phase is referenced to this acquisition.
+    neighbor_arrays : np.ndarray, optional
+        The neighbor arrays to use for SHP, shape = (n_rows, n_cols, *window_shape).
+        If None, a rectangular window is used. By default None.
+    baseline_lag : int, optional, default=None
+        StBAS parameter to include only nearest-N interferograms.
+        A `baseline_lag` of `n` will only include the closest `n` interferograms.
+
+    Returns
+    -------
+    EvdMultiScattererOutput
+        Named tuple with `cpx_phase`, `temp_coh`, and `eigenvalues`, each carrying
+        a leading axis of size `n_eigenvectors` ordered from dominant to weakest
+        scatterer.
+
+    """
+    if not 1 <= n_eigenvectors <= slc_stack.shape[0]:
+        msg = (
+            f"n_eigenvectors={n_eigenvectors} must be in [1, n_slc="
+            f"{slc_stack.shape[0]}]"
+        )
+        raise ValueError(msg)
+
+    C_arrays = covariance.estimate_stack_covariance(
+        slc_stack,
+        half_window,
+        strides,
+        neighbor_arrays=neighbor_arrays,
+    )
+    ns = slc_stack.shape[0]
+    if baseline_lag:
+        u_rows, u_cols = jnp.triu_indices(ns, baseline_lag)
+        l_rows, l_cols = jnp.tril_indices(ns, -baseline_lag)
+        C_arrays = C_arrays.at[:, :, u_rows, u_cols].set(0.0 + 0j)
+        C_arrays = C_arrays.at[:, :, l_rows, l_cols].set(0.0 + 0j)
+
+    reference_idx = ns + reference_idx if reference_idx < 0 else reference_idx
+    # cpx_phase: (rows, cols, n_eigenvectors, nslc)
+    # eig_vals: (rows, cols, n_eigenvectors)
+    cpx_phase, eig_vals = process_evd_top_n(
+        C_arrays,
+        n_eigenvectors=n_eigenvectors,
+        reference_idx=reference_idx,
+    )
+
+    # Temporal coherence of each eigenvector's solution against the same C.
+    # Move the eigenvector axis to the front so we can vmap over it.
+    cpx_phase_eig_first = jnp.moveaxis(cpx_phase, 2, 0)
+    temp_coh = vmap(lambda cp: metrics.estimate_temp_coh(cp, C_arrays))(
+        cpx_phase_eig_first
+    )
+
+    return EvdMultiScattererOutput(
+        # Reshape to (n_eigenvectors, nslc, rows, cols) to match the (nslc, ...)
+        # layout used elsewhere for a single scatterer's SLC stack.
+        cpx_phase=jnp.moveaxis(cpx_phase_eig_first, -1, 1),
+        temp_coh=temp_coh,
+        eigenvalues=jnp.moveaxis(eig_vals, 2, 0),
+    )
+
+
+@partial(jit, static_argnames=("n_eigenvectors", "reference_idx"))
+def process_evd_top_n(
+    C_arrays: ArrayLike,
+    n_eigenvectors: int = 2,
+    reference_idx: int = 0,
+) -> tuple[Array, Array]:
+    """Estimate the top-N EVD eigenvector phases for a stack of coherence matrices.
+
+    Decomposes the same ``C * |C|`` operator used by the standard EVD path
+    (see [`process_coherence_matrices`][]), so index 0 of the eigenvector axis
+    matches the ``use_evd=True`` estimate exactly.
+
+    Parameters
+    ----------
+    C_arrays : ndarray, shape = (rows, cols, nslc, nslc)
+        The sample coherence matrix at each pixel.
+    n_eigenvectors : int, optional
+        Number of leading eigenvectors to return, by default 2.
+    reference_idx : int, optional
+        The index of the reference acquisition, by default 0.
+
+    Returns
+    -------
+    evd_estimate : ndarray, shape = (rows, cols, n_eigenvectors, nslc)
+        The phase estimate for each eigenvector, referenced to `reference_idx`.
+    eig_vals : ndarray, shape = (rows, cols, n_eigenvectors)
+        The largest `n_eigenvectors` eigenvalues, ordered largest to smallest.
+
+    """
+    eig_vals, eig_vecs = eigh_largest_n_stack(
+        C_arrays * jnp.abs(C_arrays), n_eigenvectors
+    )
+    # eig_vecs: (rows, cols, n_eigenvectors, nslc)
+    # Reference each eigenvector's phase to the acquisition at `reference_idx`
+    ref = eig_vecs[:, :, :, reference_idx]  # (rows, cols, n_eigenvectors)
+    evd_estimate = eig_vecs * jnp.exp(-1j * jnp.angle(ref[..., None]))
+    return evd_estimate, eig_vals
 
 
 def decimate(arr: ArrayLike, strides: Strides) -> Array:

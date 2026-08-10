@@ -3,6 +3,7 @@
 ## [0.42.0](https://github.com/isce-framework/dolphin/compare/v0.41.0...v0.42.0) - 2025-08-19
 
 ### Added
+- `phase_link.run_evd_cpl` and `phase_link._eigenvalues.eigh_largest_n_stack` to extract the top-N EVD eigenvectors (the dominant plus secondary "other" scatterers) from the coherence matrix, following the CAESAR decomposition
 
 ### Changed
 - Update workflow defaults for larger half-window and nearest-3 (#634)

@@ -6,4 +6,17 @@ Currently implements the eigenvalue-based maximum likelihood (EMI) algorithm fro
 """
 
 from ._compress import compress
-from ._core import PhaseLinkRuntimeError, run_phase_linking
+from ._core import (
+    EvdMultiScattererOutput,
+    PhaseLinkRuntimeError,
+    run_evd_cpl,
+    run_phase_linking,
+)
+
+__all__ = [
+    "EvdMultiScattererOutput",
+    "PhaseLinkRuntimeError",
+    "compress",
+    "run_evd_cpl",
+    "run_phase_linking",
+]

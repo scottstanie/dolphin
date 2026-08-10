@@ -15,7 +15,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax import Array, jit, vmap
-from jax.lax import while_loop
+from jax.lax import scan, while_loop
 from jax.typing import ArrayLike
 
 # For both largest and smallest eig, we map over the first two dimensions
@@ -90,6 +90,46 @@ def eigh_largest_stack(C_arrays: ArrayLike) -> tuple[Array, Array]:
     return eig_vals.real, eig_vecs
 
 
+@partial(jit, static_argnames=("n_eigenvectors",))
+def eigh_largest_n_stack(
+    C_arrays: ArrayLike, n_eigenvectors: int = 2
+) -> tuple[Array, Array]:
+    """Get the top-`n_eigenvectors` eigenpairs for each pixel in a 3D stack.
+
+    Returns the eigenpairs in order of descending eigenvalue, so that index 0
+    corresponds to the dominant scatterer (identical to [`eigh_largest_stack`][]),
+    index 1 to the second scatterer, and so on. This is the eigenbasis used by
+    the CAESAR decomposition [@Fornaro2015CAESARApproachBased] to separate the
+    dominant scattering mechanism from secondary ("other") scatterers within a
+    resolution cell.
+
+    Returns real eigenvalues, assuming the arrays are Hermitian.
+
+    Parameters
+    ----------
+    C_arrays : ArrayLike
+        The stack of coherence matrices.
+        Shape = (rows, cols, nslc, nslc)
+    n_eigenvectors : int
+        The number of leading eigenpairs to return.
+        Must be at least 1 and no greater than `nslc`. By default 2.
+
+    Returns
+    -------
+    eigenvalues : Array
+        The `n_eigenvectors` largest eigenvalues for each pixel's matrix,
+        ordered from largest to smallest.
+        Shape = (rows, cols, n_eigenvectors)
+    eigenvectors : Array
+        The normalized eigenvectors corresponding to `eigenvalues`.
+        Shape = (rows, cols, n_eigenvectors, nslc)
+
+    """
+    solver = partial(top_n_power_iteration, n_eigenvectors=n_eigenvectors)
+    eig_vals, eig_vecs = vmap(vmap(solver))(C_arrays)
+    return eig_vals.real, eig_vecs
+
+
 @partial(jit, static_argnames=("tol",))
 def power_iteration(
     A: jnp.array, tol: float = 1e-5, max_iters: int = 50
@@ -134,6 +174,53 @@ def power_iteration(
     # vk is normalized to 1, so no need to divide by (vk.T @ vk)
     eigenvalue = vk.conj() @ A @ vk
     return eigenvalue, vk
+
+
+@partial(jit, static_argnames=("n_eigenvectors", "tol", "max_iters"))
+def top_n_power_iteration(
+    A: jnp.array,
+    n_eigenvectors: int = 2,
+    tol: float = 1e-5,
+    max_iters: int = 50,
+) -> tuple[jnp.array, jnp.array]:
+    """Compute the top-`n_eigenvectors` eigenpairs of a Hermitian matrix.
+
+    Runs [`power_iteration`][] to find the dominant eigenpair, then repeatedly
+    applies Hotelling deflation (subtracting ``lambda * v v^H``) to remove the
+    found eigenpair and expose the next-largest one.
+
+    Parameters
+    ----------
+    A : jnp.array
+        The input (Hermitian) matrix.
+    n_eigenvectors : int, optional
+        The number of leading eigenpairs to return (default is 2).
+    tol : float, optional
+        The tolerance for convergence of each power iteration (default is 1e-5).
+    max_iters : int, optional
+        The maximum number of iterations per eigenpair (default is 50).
+
+    Returns
+    -------
+    eigenvalues : jnp.array
+        The `n_eigenvectors` largest eigenvalues, ordered from largest to smallest.
+        Shape = (n_eigenvectors,)
+    eigenvectors : jnp.array
+        The corresponding eigenvectors, stacked along the first axis.
+        Shape = (n_eigenvectors, A.shape[-1])
+
+    """
+
+    def deflate_step(A_cur, _):
+        eigenvalue, vk = power_iteration(A_cur, tol=tol, max_iters=max_iters)
+        # Hotelling deflation: remove the found eigenpair so the next iteration
+        # converges to the following-largest eigenvalue. Valid for Hermitian `A`
+        # since its eigenvectors are orthogonal.
+        A_next = A_cur - eigenvalue * jnp.outer(vk, jnp.conj(vk))
+        return A_next, (eigenvalue, vk)
+
+    _, (eig_vals, eig_vecs) = scan(deflate_step, A, xs=None, length=n_eigenvectors)
+    return eig_vals, eig_vecs
 
 
 @partial(jit, static_argnames=("mu", "tol", "max_iters"))

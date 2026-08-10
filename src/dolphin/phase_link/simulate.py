@@ -295,6 +295,39 @@ def evd(cov_mat):
     return evd_estimate.astype(cov_mat.dtype)
 
 
+def evd_top_n(cov_mat, n_eigenvectors: int = 2, reference_idx: int = 0):
+    """Estimate the linked phase for the top-`n_eigenvectors` eigenvectors.
+
+    Simple reference implementation of the CAESAR-style multi-scatterer
+    decomposition [@Fornaro2015CAESARApproachBased]: the dominant eigenvector
+    is the strongest scatterer and the following eigenvectors are the secondary
+    ("other") scatterers.
+
+    Parameters
+    ----------
+    cov_mat : np.ndarray
+        The sample covariance matrix, shape (nslc, nslc).
+    n_eigenvectors : int, optional
+        The number of leading eigenvectors to return, by default 2.
+    reference_idx : int, optional
+        The acquisition each eigenvector's phase is referenced to, by default 0.
+
+    Returns
+    -------
+    np.ndarray
+        The estimated linked phase, shape (n_eigenvectors, nslc), ordered from
+        the dominant to the weakest scatterer.
+
+    """
+    _lambda, v = la.eigh(cov_mat)
+    # `eigh` returns ascending eigenvalues, so the top-N are the last columns
+    # reversed to be in descending order.
+    top_vecs = v[:, : -n_eigenvectors - 1 : -1]  # shape (nslc, n_eigenvectors)
+    # Reference each eigenvector to `reference_idx`
+    referenced = top_vecs * np.conjugate(top_vecs[reference_idx, :])
+    return referenced.T.astype(cov_mat.dtype)
+
+
 def make_defo_stack(
     shape: tuple[int, int, int], sigma: float, max_amplitude: float = 1
 ) -> np.ndarray:

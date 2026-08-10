@@ -3,7 +3,8 @@
 ## [0.42.0](https://github.com/isce-framework/dolphin/compare/v0.41.0...v0.42.0) - 2025-08-19
 
 ### Added
-- `phase_link.run_evd_cpl` and `phase_link._eigenvalues.eigh_largest_n_stack` to extract the top-N EVD eigenvectors (the dominant plus secondary "other" scatterers) from the coherence matrix, following the CAESAR decomposition
+- `phase_link.run_evd_cpl` and `phase_link._eigenvalues.eigh_largest_n_stack` to extract the top-N EVD eigenvectors (the dominant plus secondary "other" scatterers) from the coherence matrix, following the CAESAR decomposition. By default the plain (PSD) coherence matrix is decomposed; `weight_by_coherence=True` reproduces the existing `use_evd=True` operator
+- `scripts/run-evd-multi-scatterer.py` to write the top-N scatterer phase, temporal coherence, and eigenvalue rasters over a real SLC stack, outside the main `single.py` workflow
 
 ### Changed
 - Update workflow defaults for larger half-window and nearest-3 (#634)

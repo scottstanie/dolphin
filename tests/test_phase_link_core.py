@@ -76,20 +76,36 @@ def test_run_evd_cpl(slc_samples, n_eigenvectors):
     eigenvalues = np.asarray(out.eigenvalues)
     # Eigenvalues are returned largest-to-smallest along the scatterer axis
     assert np.all(np.diff(eigenvalues, axis=0) <= 1e-4)
+    # By default the plain (PSD) coherence matrix is decomposed: eigenvalues >= 0
+    assert np.all(eigenvalues >= -1e-5)
     # Temporal coherence is a goodness-of-fit in [0, 1]
     temp_coh = np.asarray(out.temp_coh)
     assert np.all((temp_coh >= 0) & (temp_coh <= 1 + 1e-5))
 
-    # The dominant scatterer (index 0) must reproduce the standard EVD estimate
+    # The dominant scatterer should be a high-coherence solution, and no weaker
+    # than the secondary scatterers.
+    assert temp_coh[0].mean() > 0.9
+    assert temp_coh[0].mean() >= temp_coh[-1].mean()
+
+
+def test_run_evd_cpl_weighted_matches_evd_path(slc_samples):
+    # With `weight_by_coherence=True`, the dominant scatterer decomposes the same
+    # `C * |C|` operator as `run_cpl(use_evd=True)` and must match it exactly.
+    slc_stack = slc_samples.reshape(NUM_ACQ, 11, 11)
+    hw, st = HalfWindow(x=5, y=5), Strides(x=1, y=1)
+
+    out = _core.run_evd_cpl(
+        slc_stack, hw, st, n_eigenvectors=2, weight_by_coherence=True
+    )
     pl_evd = _core.run_cpl(slc_stack, hw, st, use_evd=True)
-    npt.assert_allclose(eigenvalues[0], np.asarray(pl_evd.eigenvalues), atol=2e-5)
+
+    npt.assert_allclose(
+        np.asarray(out.eigenvalues[0]), np.asarray(pl_evd.eigenvalues), atol=2e-5
+    )
     phase_diff = np.angle(
         np.asarray(out.cpx_phase[0]) * np.conj(np.asarray(pl_evd.cpx_phase))
     )
     assert np.max(np.abs(phase_diff)) < 1e-4
-
-    # The dominant scatterer should also be the higher-coherence solution
-    assert temp_coh[0].mean() >= temp_coh[-1].mean()
 
 
 def test_run_evd_cpl_invalid_n(slc_samples):

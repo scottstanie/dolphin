@@ -565,6 +565,7 @@ def run_evd_cpl(
     *,
     n_eigenvectors: int = 2,
     reference_idx: int = 0,
+    weight_by_coherence: bool = False,
     neighbor_arrays: Optional[np.ndarray] = None,
     baseline_lag: Optional[int] = None,
 ) -> EvdMultiScattererOutput:
@@ -598,6 +599,14 @@ def run_evd_cpl(
     reference_idx : int, optional
         The index of the reference acquisition, by default 0.
         Each eigenvector's phase is referenced to this acquisition.
+    weight_by_coherence : bool, optional
+        If False (default), decompose the coherence matrix `C` directly, whose
+        eigenvectors are the CAESAR scattering mechanisms and which is Hermitian
+        positive semidefinite (so the eigenvalue ordering is well defined). If
+        True, decompose the coherence-weighted `C * |C|` operator used by the
+        standard EVD fallback path (see [`process_coherence_matrices`][]); index
+        0 then matches the `use_evd=True` estimate exactly, at the cost of a less
+        physically-interpretable secondary eigenbasis.
     neighbor_arrays : np.ndarray, optional
         The neighbor arrays to use for SHP, shape = (n_rows, n_cols, *window_shape).
         If None, a rectangular window is used. By default None.
@@ -640,6 +649,7 @@ def run_evd_cpl(
         C_arrays,
         n_eigenvectors=n_eigenvectors,
         reference_idx=reference_idx,
+        weight_by_coherence=weight_by_coherence,
     )
 
     # Temporal coherence of each eigenvector's solution against the same C.
@@ -658,17 +668,16 @@ def run_evd_cpl(
     )
 
 
-@partial(jit, static_argnames=("n_eigenvectors", "reference_idx"))
+@partial(
+    jit, static_argnames=("n_eigenvectors", "reference_idx", "weight_by_coherence")
+)
 def process_evd_top_n(
     C_arrays: ArrayLike,
     n_eigenvectors: int = 2,
     reference_idx: int = 0,
+    weight_by_coherence: bool = False,
 ) -> tuple[Array, Array]:
     """Estimate the top-N EVD eigenvector phases for a stack of coherence matrices.
-
-    Decomposes the same ``C * |C|`` operator used by the standard EVD path
-    (see [`process_coherence_matrices`][]), so index 0 of the eigenvector axis
-    matches the ``use_evd=True`` estimate exactly.
 
     Parameters
     ----------
@@ -678,6 +687,12 @@ def process_evd_top_n(
         Number of leading eigenvectors to return, by default 2.
     reference_idx : int, optional
         The index of the reference acquisition, by default 0.
+    weight_by_coherence : bool, optional
+        If False (default), decompose the coherence matrix `C` directly: it is
+        Hermitian positive semidefinite and its eigenvectors are the CAESAR
+        scattering mechanisms. If True, decompose the ``C * |C|`` operator used
+        by the standard EVD path (see [`process_coherence_matrices`][]), so
+        index 0 matches the ``use_evd=True`` estimate exactly.
 
     Returns
     -------
@@ -687,9 +702,8 @@ def process_evd_top_n(
         The largest `n_eigenvectors` eigenvalues, ordered largest to smallest.
 
     """
-    eig_vals, eig_vecs = eigh_largest_n_stack(
-        C_arrays * jnp.abs(C_arrays), n_eigenvectors
-    )
+    M = C_arrays * jnp.abs(C_arrays) if weight_by_coherence else C_arrays
+    eig_vals, eig_vecs = eigh_largest_n_stack(M, n_eigenvectors)
     # eig_vecs: (rows, cols, n_eigenvectors, nslc)
     # Reference each eigenvector's phase to the acquisition at `reference_idx`
     ref = eig_vecs[:, :, :, reference_idx]  # (rows, cols, n_eigenvectors)

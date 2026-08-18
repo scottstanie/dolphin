@@ -5,7 +5,7 @@ from functools import partial
 import jax.numpy as jnp
 import numpy as np
 from jax import Array, jit
-from jax.scipy.linalg import solve
+from jax.scipy.linalg import cho_factor, cho_solve
 from numpy.linalg import inv
 from numpy.typing import ArrayLike
 
@@ -129,6 +129,11 @@ def _theta_indices(n: int, ref: int) -> Array:
     return jnp.concatenate([jnp.arange(ref), jnp.arange(ref + 1, n)])
 
 
+def _solve_positive_definite(a: Array, b: Array) -> Array:
+    """Solve a positive-definite system without vectorizing a matrix RHS."""
+    return cho_solve(cho_factor(a), b)
+
+
 def _build_fisher_from_abs_gamma(
     abs_G: Array, abs_G_inv: Array, num_looks: float
 ) -> Array:
@@ -175,7 +180,7 @@ def _crlb_from_x(
         X_plus_R = X + R_inv + 0.0 * eyeN  # no implicit extra jitter here
         # (X + R⁻¹)⁻¹ (X Θ) via solve, where Θ selects columns 'idx'
         X_cols = X[..., :, idx]  # (..., N, N-1)
-        AXTheta = solve(X_plus_R, X_cols, assume_a="pos")  # (..., N, N-1)
+        AXTheta = _solve_positive_definite(X_plus_R, X_cols)  # (..., N, N-1)
         A = (X @ AXTheta)[..., idx, :]  # (..., N-1, N-1)
         FIM = F_base - A
     else:
@@ -184,7 +189,7 @@ def _crlb_from_x(
     # Σ = inverse of FIM
     if fim_jitter != 0.0:
         FIM = FIM + fim_jitter * eyeN1
-    Sigma = solve(FIM, eyeN1, assume_a="pos")
+    Sigma = _solve_positive_definite(FIM, eyeN1)
     sig = jnp.sqrt(jnp.diagonal(Sigma, axis1=-2, axis2=-1))
     return jnp.insert(sig, reference_idx, 0.0, axis=-1)
 
@@ -238,7 +243,7 @@ def compute_crlb_jax(
     abs_G_safe = abs_G + gamma_jitter * eyeNb
     abs_G_safe = jnp.where(is_zero_block, eyeNb, abs_G_safe)
 
-    abs_G_inv = solve(abs_G_safe, eyeNb, assume_a="pos")
+    abs_G_inv = _solve_positive_definite(abs_G_safe, eyeNb)
 
     # Build X once and do the inverse-free CRLB from X
     X = _build_fisher_from_abs_gamma(abs_G, abs_G_inv, num_looks)

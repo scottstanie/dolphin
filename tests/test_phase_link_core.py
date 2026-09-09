@@ -241,3 +241,30 @@ def test_run_phase_linking_gaussian_vs_rect(C_truth):
         pl_out_gaussian.temp_coh[5, 5],
         atol=0.1,
     )
+
+
+def test_crlb_reference_matches_phase_reference():
+    """The zero-uncertainty entry must sit at the requested reference index."""
+    from dolphin.phase_link._core import process_coherence_matrices
+
+    n = 7
+    idxs = np.abs(np.arange(n)[:, None] - np.arange(n)[None, :])
+    gamma = 0.65 * 0.8**idxs + 0.2
+    np.fill_diagonal(gamma, 1.0)
+    phases = np.linspace(0, 0.8, n)
+    coh = gamma * np.exp(1j * (phases[:, None] - phases[None, :]))
+    coh = coh[None, None].astype(np.complex64)
+    for use_evd in (False, True):
+        cpx, _, _, std = process_coherence_matrices(
+            coh, use_evd=use_evd, reference_idx=2, num_looks=100, compute_crlb=True
+        )
+        est = np.angle(np.asarray(cpx)[0, 0])
+        std = np.asarray(std)[0, 0]
+        assert abs(est[2]) < 1e-6
+        assert std[2] == 0.0
+        assert np.all(std[np.arange(n) != 2] > 0)
+        # Negative references count from the end, like the phase output
+        _, _, _, std_neg = process_coherence_matrices(
+            coh, use_evd=use_evd, reference_idx=-1, num_looks=100, compute_crlb=True
+        )
+        assert np.asarray(std_neg)[0, 0, -1] == 0.0

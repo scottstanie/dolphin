@@ -518,7 +518,7 @@ def process_coherence_matrices(
         during CRLB computation.
     first_real_slc_idx : int, optional, default = 0
         The index of the first real SLC in the stack.
-        This is only used for the CRLB computation.
+        Retained for API compatibility; the CRLB is referenced to `reference_idx`.
         By default 0.
     compute_crlb : bool, optional
         Whether to compute the CRLB
@@ -539,6 +539,8 @@ def process_coherence_matrices(
 
     """
     rows, cols, n, _ = C_arrays.shape
+    # Retained for API compatibility; the CRLB now follows `reference_idx`.
+    del first_real_slc_idx
 
     evd_eig_vals, evd_eig_vecs = eigh_largest_stack(C_arrays * jnp.abs(C_arrays))
 
@@ -611,7 +613,9 @@ def process_coherence_matrices(
     if compute_crlb:
         # Build X once and do the inverse-free CRLB from X
         X = crlb._build_fisher_from_abs_gamma(Gamma, Gamma_inv, num_looks)
-        crlb_std_dev = crlb._crlb_from_x(X, max(first_real_slc_idx - 1, 0), 0, 1e-6)
+        # Reference the CRLB to the same acquisition as the output phases, so the
+        # zero-uncertainty entry sits where the phase is zero.
+        crlb_std_dev = crlb._crlb_from_x(X, reference_idx % n, 0, 1e-6)
 
     else:
         crlb_std_dev = jnp.zeros(C_arrays.shape[:-1], dtype=jnp.float32)

@@ -1,3 +1,5 @@
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -7,7 +9,20 @@ from jax import Array
 def compute_nearest_closure_phases(
     cov_matrix: Array,
 ) -> Array:
-    """Compute the nearest-neighbor closure phases for a single covariance matrix."""
+    """Compute nearest-neighbor triplet closure phases from a covariance matrix.
+
+    Use the convention ``C[i, j] = mean(s[i] * conj(s[j]))``. The result contains
+    ``N - 2`` wrapped phases in radians for triplets ``(i, i+1, i+2)``. For
+    ``N > 3``, these do not span all independent cycles of the complete graph.
+
+    Compute this diagnostic on the sample covariance, before reconstructing
+    interferograms from linked phases (which close by construction). Nonzero
+    closure can reflect heterogeneous displacement, dielectric effects, or
+    finite-look noise; it does not identify the physical source by itself.
+
+    Interpret the result together with pair coherences. A zero triplet product
+    has undefined physical phase, although ``jnp.angle(0)`` returns zero.
+    """
     # Extract the diagonals we need
     # First super-diagonal: Used for (i, i+1), then (i+1, i+2)
     diag_1 = jnp.diag(cov_matrix, k=1)  # length N-1
@@ -17,6 +32,54 @@ def compute_nearest_closure_phases(
     # Compute closure phases as complex numbers, then take the angle
     closure_complex = diag_1[:-1] * diag_1[1:] * jnp.conj(diag_2)
     return jnp.angle(closure_complex)
+
+
+@partial(jax.jit, static_argnames=["scale"])
+def compute_two_hop_closure_phases(cov_matrix: Array, scale: int = 1) -> Array:
+    """Compute two-hop closure phases of triplets ``(i, i+k, i+2k)``, ``k = scale``.
+
+    This is the equal-hop "two hops" closure basis of [1]_ evaluated at time scale
+    ``2 * scale`` sampling intervals. ``scale=1`` reproduces
+    `compute_nearest_closure_phases`. The result has ``N - 2 * scale`` wrapped
+    phases in radians, using the convention ``C[i, j] = mean(s[i] * conj(s[j]))``.
+
+    Comparing scales separates two regimes that bias phase linking in opposite
+    ways (see the displacement-heterogeneity tutorial, Section 7): a transient
+    nuisance such as soil moisture gives closure that decays with ``scale``,
+    while unresolved persistent differential motion gives closure that grows
+    with ``scale`` (as its cube while small).
+
+    Parameters
+    ----------
+    cov_matrix : Array
+        Complex Hermitian (N, N) sample coherence or covariance matrix.
+    scale : int
+        Hop length ``k`` in acquisitions. Must satisfy ``2 * scale < N``.
+
+    Returns
+    -------
+    Array
+        Wrapped closure phases, shape (N - 2 * scale,).
+
+    References
+    ----------
+    .. [1] Zwieback and Biessel (2024), "Temporal Closure Signatures in Radar
+       Interferometry," IEEE TGRS 62, doi:10.1109/TGRS.2024.3471712.
+
+    """
+    diag_k = jnp.diag(cov_matrix, k=scale)
+    diag_2k = jnp.diag(cov_matrix, k=2 * scale)
+    return jnp.angle(diag_k[:-scale] * diag_k[scale:] * jnp.conj(diag_2k))
+
+
+@partial(jax.jit, static_argnames=["scale"])
+def compute_two_hop_closure_phases_batch(cov_matrices: Array, scale: int = 1) -> Array:
+    """Compute two-hop closure phases for a (..., R, C, N, N) batch of matrices.
+
+    See `compute_two_hop_closure_phases`. Output shape is (..., R, C, N - 2 * scale).
+    """
+    fn = partial(compute_two_hop_closure_phases, scale=scale)
+    return jax.vmap(jax.vmap(fn))(cov_matrices)
 
 
 # Vectorized version for multiple covariance matrices (e.g., different pixels)

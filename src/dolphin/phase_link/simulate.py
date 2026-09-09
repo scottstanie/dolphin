@@ -59,6 +59,88 @@ def simulate_neighborhood_stack(
     return samps
 
 
+def simulate_displacement_covariance(
+    displacements: ArrayLike,
+    wavelength: float,
+    weights: ArrayLike | None = None,
+) -> np.ndarray:
+    r"""Construct a population coherence matrix from heterogeneous LOS motion.
+
+    Hold scattering coefficients and relative powers constant across acquisitions.
+    With ``q = 4 * pi / wavelength``, form a positive-semidefinite mixture
+    ``C[i, j] = sum(w * exp(-1j * q * (d[i] - d[j]))) / sum(w)``.
+    Unequal mixtures of different motion histories can have nonzero closure
+    phase without changing dielectric properties.
+
+    Parameters
+    ----------
+    displacements : ArrayLike
+        Finite, real array of shape (n_acquisitions, n_components). Positive
+        displacement increases slant range. For vertical motion, project onto
+        the line of sight before calling this function.
+    wavelength : float
+        Positive, finite radar wavelength in the same units as displacements.
+    weights : ArrayLike, optional
+        Nonnegative, finite, time-invariant scattering power weights, shape
+        (n_components,). At least one must be positive. Defaults to equal
+        weights. Area fractions are appropriate only for equal power per area.
+
+    Returns
+    -------
+    np.ndarray
+        Complex128 Hermitian coherence matrix, shape (n_acquisitions,
+        n_acquisitions), with unit diagonal. This is an ensemble result, with
+        no finite-look noise, thermal noise, or additional decorrelation.
+
+    Raises
+    ------
+    ValueError
+        If inputs are empty, nonfinite, complex, or have invalid shapes or signs.
+
+    Notes
+    -----
+    This describes either distinct motion components across a multilook window
+    or independent unresolved scatterers after ensemble averaging. It does not
+    simulate the sensor point-spread function or a spatially resolved scene.
+    The matrix can be singular (rank at most n_components), so Cholesky-based
+    sampling via `simulate_neighborhood_stack` is not generally applicable.
+
+    Unlike `simulate_coh_stack`, the phases need not factor into a single phase
+    history. See the displacement-heterogeneity tutorial for a counterexample,
+    symmetric null cases, and coherent SLC simulations.
+
+    References
+    ----------
+    .. [1] Biessel, Lohman, and Zwieback (2026), "Displacement Heterogeneity
+       and Associated InSAR Closure Phases in a Permafrost Landscape."
+       https://doi.org/10.1109/TGRS.2026.3729078
+
+    """
+    d = np.asarray(displacements)
+    if d.ndim != 2 or 0 in d.shape or not np.isrealobj(d):
+        raise ValueError("displacements must be a nonempty real 2D array")
+    d = np.asarray(d, dtype=np.float64)
+    if not np.all(np.isfinite(d)):
+        raise ValueError("displacements must be finite")
+    if not np.isrealobj(wavelength) or np.ndim(wavelength) != 0:
+        raise ValueError("wavelength must be a positive finite scalar")
+    if not np.isfinite(wavelength) or wavelength <= 0:
+        raise ValueError("wavelength must be a positive finite scalar")
+
+    w = np.ones(d.shape[1]) if weights is None else np.asarray(weights)
+    if w.shape != (d.shape[1],) or not np.isrealobj(w):
+        raise ValueError("weights must be a real vector with one entry per component")
+    w = np.asarray(w, dtype=np.float64)
+    if not np.all(np.isfinite(w)) or np.any(w < 0) or not np.any(w > 0):
+        raise ValueError("weights must be finite, nonnegative, and not all zero")
+    w = w / w.max()
+    w = w / w.sum()
+
+    # Subtract each component's reference displacement: its static phase cancels.
+    phasors = np.exp(-1j * (4 * np.pi / wavelength) * (d - d[:1]))
+    return (phasors * w) @ phasors.conj().T
+
+
 def simulate_coh(
     num_acq: int = 50,
     gamma_inf: float = 0.1,
@@ -156,6 +238,14 @@ def simulate_coh_stack(
     -------
     np.ndarray
         The simulated coherence matrix for each pixel.
+
+    Notes
+    -----
+    With positive real coherence factors, this population model has zero
+    closure phase: every pair phase comes from the same `signal` history.
+    Sampling can introduce finite-look misclosure. Use
+    `simulate_displacement_covariance` for a population model in which
+    heterogeneous motion itself can produce nonzero closure.
 
     """
     num_time = time.shape[0]

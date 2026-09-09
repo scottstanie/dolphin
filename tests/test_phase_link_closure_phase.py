@@ -7,7 +7,10 @@ from dolphin.phase_link._closure_phase import (
     closure_phase_coefficient,
     compute_nearest_closure_phases,
     compute_nearest_closure_phases_batch,
+    compute_two_hop_closure_phases,
+    compute_two_hop_closure_phases_batch,
 )
+from dolphin.phase_link.simulate import simulate_displacement_covariance
 
 
 @pytest.mark.parametrize("n", [4, 10, 23])
@@ -133,3 +136,66 @@ class TestClosurePhaseCoefficient:
         C = C / np.outer(d, d)
         gamma = float(closure_phase_coefficient(jnp.asarray(C)))
         assert gamma > 0.95
+
+
+class TestTwoHopClosurePhases:
+    """Tests for the equal-hop two-hop closure basis at scale k."""
+
+    def test_scale_one_matches_nearest(self):
+        rng = np.random.default_rng(1)
+        n = 10
+        A = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+        C = A + A.conj().T
+        np.testing.assert_allclose(
+            compute_two_hop_closure_phases(C, scale=1),
+            compute_nearest_closure_phases(C),
+            atol=1e-6,
+        )
+
+    @pytest.mark.parametrize("scale", [1, 2, 3])
+    def test_shape_and_rank1_is_zero(self, scale):
+        n = 12
+        rng = np.random.default_rng(scale)
+        v = np.exp(1j * rng.uniform(-np.pi, np.pi, n))
+        C = np.outer(v, v.conj())
+        out = compute_two_hop_closure_phases(C, scale=scale)
+        assert out.shape == (n - 2 * scale,)
+        np.testing.assert_allclose(out, 0.0, atol=1e-6)
+
+    def test_manual_triplet(self):
+        rng = np.random.default_rng(7)
+        n = 9
+        A = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+        C = A + A.conj().T
+        k = 2
+        expected = [
+            np.angle(C[i, i + k] * C[i + k, i + 2 * k] * C[i + 2 * k, i])
+            for i in range(n - 2 * k)
+        ]
+        np.testing.assert_allclose(
+            compute_two_hop_closure_phases(C, scale=k), expected, atol=1e-6
+        )
+
+    def test_persistent_differential_motion_grows_as_cube_of_scale(self):
+        # Small differential phase per interval: two-hop closure ~ kappa3 * (k x)^3.
+        x = 0.05
+        times = np.arange(20) * 1.0
+        # With wavelength 4*pi, displacement x gives phase x per interval.
+        d = np.outer(times, [0.0, x])
+        C = simulate_displacement_covariance(d, 4 * np.pi, weights=[0.8, 0.2])
+        c1 = np.mean(np.asarray(compute_two_hop_closure_phases(C, scale=1)))
+        c2 = np.mean(np.asarray(compute_two_hop_closure_phases(C, scale=2)))
+        c3 = np.mean(np.asarray(compute_two_hop_closure_phases(C, scale=3)))
+        assert c2 / c1 == pytest.approx(8.0, rel=0.05)
+        assert c3 / c1 == pytest.approx(27.0, rel=0.1)
+
+    def test_batch_matches_single(self):
+        rng = np.random.default_rng(3)
+        r, c, n = 2, 3, 11
+        A = rng.normal(size=(r, c, n, n)) + 1j * rng.normal(size=(r, c, n, n))
+        C = A + np.swapaxes(A, -2, -1).conj()
+        out = compute_two_hop_closure_phases_batch(C, scale=2)
+        assert out.shape == (r, c, n - 4)
+        np.testing.assert_allclose(
+            out[1, 2], compute_two_hop_closure_phases(C[1, 2], scale=2), atol=1e-6
+        )

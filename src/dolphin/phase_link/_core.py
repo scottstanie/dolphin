@@ -4,7 +4,7 @@ import logging
 import math
 from enum import IntEnum
 from functools import partial
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Sequence
 
 import jax.numpy as jnp
 import numpy as np
@@ -19,8 +19,10 @@ from . import covariance, crlb, metrics
 from ._closure_phase import (
     closure_phase_coefficient,
     compute_nearest_closure_phases_batch,
+    compute_two_hop_closure_phases_batch,
 )
 from ._eigenvalues import eigh_largest_stack, eigh_smallest_stack
+from ._looks import CrlbLooksMethod, estimate_effective_looks_fraction
 from ._multilooked_coherence import make_batch_extractor
 from ._ps_filling import fill_ps_pixels
 
@@ -83,6 +85,28 @@ class PhaseLinkOutput(NamedTuple):
     multilooked_coherence: np.ndarray
     """The nearest-N coherence magnitudes at each pixel."""
 
+    two_hop_closure: np.ndarray = np.zeros((0, 0, 0), dtype=np.float32)
+    """Mean two-hop closure phase (radians) at each pixel, one band per scale.
+
+    Band ``j`` holds the angle of the mean closure phasor over all triplets
+    ``(i, i+k, i+2k)`` of the real (non-compressed) SLCs for ``k = scales[j]``.
+    Shape ``(rows, cols, len(scales))``; NaN where the stack is too short.
+    """
+
+    split_half_ratio: np.ndarray = np.zeros((0, 0), dtype=np.float32)
+    """Sampling-scatter check: RMS over dates of the phase disagreement between
+    two disjoint halves of each window, divided by its CRLB prediction.
+
+    About 1 when the reported CRLB matches the actual sampling scatter. Larger
+    values flag within-window heterogeneity or texture that the Gaussian
+    distributed-scatterer model does not describe. Zero where not computed.
+    """
+
+    effective_looks_fraction: float = 1.0
+    """Ratio of effective to nominal looks used to scale the CRLB, from the
+    intensity autocorrelation of this block. 1.0 unless `crlb_looks="effective"`.
+    """
+
 
 def run_phase_linking(
     slc_stack: ArrayLike,
@@ -104,6 +128,9 @@ def run_phase_linking(
     compute_crlb: bool = True,
     flatten: bool = True,
     nearest_n_coherence: int = 0,
+    two_hop_scales: Sequence[int] = (),
+    crlb_looks: CrlbLooksMethod | str = CrlbLooksMethod.EFFECTIVE,
+    split_half: bool = False,
 ) -> PhaseLinkOutput:
     """Estimate the linked phase for a stack of SLCs.
 
@@ -174,6 +201,17 @@ def run_phase_linking(
         Number of nearest coherence diagonals to extract and return.
         0 (default) means don't extract. 1 gives first off-diagonal
         (nearest neighbor coherences), 2 gives first 2 diagonals, etc.
+    two_hop_scales : Sequence[int], optional
+        Scales ``k`` at which to output the mean two-hop closure phase of
+        triplets ``(i, i+k, i+2k)`` over the real SLCs. Default: none.
+    crlb_looks : CrlbLooksMethod or str, optional
+        How the CRLB counts looks: ``"effective"`` (default) scales the SHP count
+        by an effective-looks fraction measured from the intensity
+        autocorrelation of the stack, ``"shp_count"`` treats every neighbor as
+        independent, ``"sqrt_half_window"`` uses the legacy constant.
+    split_half : bool, optional
+        Also link two disjoint halves of every window and return the ratio of
+        their phase disagreement to its CRLB prediction. Default False.
 
     Returns
     -------
@@ -233,6 +271,9 @@ def run_phase_linking(
         compute_crlb=compute_crlb,
         flatten=flatten,
         nearest_n_coherence=nearest_n_coherence,
+        two_hop_scales=two_hop_scales,
+        crlb_looks=crlb_looks,
+        split_half=split_half,
     )
 
     # Get the smaller, looked versions of the masks
@@ -283,6 +324,10 @@ def run_phase_linking(
         closure_phases=np.asarray(cpl_out.closure_phases),
         closure_phase_coh=closure_phase_coh,
         multilooked_coherence=np.asarray(cpl_out.multilooked_coherence),
+        # Copies, so the workflow can fill NaNs in place
+        two_hop_closure=np.array(cpl_out.two_hop_closure),
+        split_half_ratio=np.array(cpl_out.split_half_ratio),
+        effective_looks_fraction=float(cpl_out.effective_looks_fraction),
     )
 
 
@@ -300,6 +345,9 @@ def run_cpl(
     first_real_slc_idx: int = 0,
     compute_crlb: bool = True,
     nearest_n_coherence: int = 0,
+    two_hop_scales: Sequence[int] = (),
+    crlb_looks: CrlbLooksMethod | str = CrlbLooksMethod.EFFECTIVE,
+    split_half: bool = False,
 ) -> PhaseLinkOutput:
     """Run the Combined Phase Linking (CPL) algorithm.
 
@@ -349,6 +397,14 @@ def run_cpl(
         Number of nearest coherence diagonals to extract and return.
         0 (default) means don't extract. 1 gives first off-diagonal
         (nearest neighbor coherences), 2 gives first 2 diagonals, etc.
+    two_hop_scales : Sequence[int], optional
+        Scales ``k`` for the mean two-hop closure phase of triplets
+        ``(i, i+k, i+2k)`` over the real SLCs. Default: none.
+    crlb_looks : CrlbLooksMethod or str, optional
+        How the CRLB counts looks. See `run_phase_linking`.
+    split_half : bool, optional
+        Also link two disjoint halves of every window and return the ratio of
+        their phase disagreement to its CRLB prediction. Default False.
 
     Returns
     -------
@@ -412,6 +468,9 @@ def run_cpl(
 
     closure_phases = compute_nearest_closure_phases_batch(C_arrays)
     closure_phase_coh = closure_phase_coefficient(C_arrays)
+    two_hop_closure = _mean_two_hop_closures(
+        C_arrays, two_hop_scales, first_real_slc_idx
+    )
 
     # Extract nearest-N coherence magnitudes if requested
     if nearest_n_coherence > 0:
@@ -422,9 +481,13 @@ def run_cpl(
         rows, cols = C_arrays.shape[:2]
         nearest_coherence = jnp.zeros((rows, cols, 0), dtype=jnp.float32)
 
-    # For a more conservative uncertainty estimate, use a smaller number of looks
-    # rather than `num_looks = (2 * half_window[0] + 1) * (2 * half_window[1] + 1)`
-    num_looks = math.sqrt(half_window[0] * half_window[1])
+    crlb_looks = CrlbLooksMethod(crlb_looks)
+    if crlb_looks == CrlbLooksMethod.SQRT_HALF_WINDOW:
+        # Legacy behavior: one conservative constant for every pixel
+        num_looks = math.sqrt(half_window[0] * half_window[1])
+    else:
+        # Solve for one look, then scale per pixel by the look count below
+        num_looks = 1
 
     reference_idx = ns + reference_idx if reference_idx < 0 else reference_idx
     cpx_phase, eigenvalues, estimator, crlb_std_dev = process_coherence_matrices(
@@ -439,22 +502,43 @@ def run_cpl(
     )
     # Get the temporal coherence
     temp_coh = metrics.estimate_temp_coh(cpx_phase, C_arrays)
+    out_shape = temp_coh.shape
+
+    # Get the SHP counts for each pixel (if not using Rect window)
+    if neighbor_arrays is None:
+        shp_counts = jnp.zeros(out_shape, dtype=np.int16)
+    else:
+        # For boolean masks this is the neighbor count; for float weights (e.g.
+        # Gaussian) it is Kish's effective sample size (sum w)^2 / sum(w^2).
+        shp_counts = jnp.round(_count_looks(neighbor_arrays, out_shape, half_window))
+        shp_counts = shp_counts.astype(jnp.int16)
+
+    looks_fraction = 1.0
+    if compute_crlb and crlb_looks != CrlbLooksMethod.SQRT_HALF_WINDOW:
+        if crlb_looks == CrlbLooksMethod.EFFECTIVE:
+            looks_fraction = estimate_effective_looks_fraction(slc_stack, half_window)
+        looks = _count_looks(neighbor_arrays, out_shape, half_window) * looks_fraction
+        crlb_std_dev = crlb_std_dev / jnp.sqrt(jnp.maximum(looks, 1.0))[..., None]
+
+    if split_half:
+        split_half_ratio = _split_half_ratio(
+            slc_stack,
+            half_window,
+            strides,
+            neighbor_arrays,
+            use_evd=use_evd,
+            beta=beta,
+            zero_correlation_threshold=zero_correlation_threshold,
+            reference_idx=reference_idx,
+            looks_fraction=looks_fraction,
+            out_shape=out_shape,
+        )
+    else:
+        split_half_ratio = jnp.zeros(out_shape, dtype=jnp.float32)
 
     # Reshape the (rows, cols, nslcs) output to be same as input stack
     cpx_phase_reshaped = jnp.moveaxis(cpx_phase, -1, 0)
     crlb_std_dev_reshaped = jnp.moveaxis(crlb_std_dev, -1, 0)
-
-    # Get the SHP counts for each pixel (if not using Rect window)
-    if neighbor_arrays is None:
-        shp_counts = jnp.zeros(temp_coh.shape, dtype=np.int16)
-    elif neighbor_arrays.dtype == np.bool_:
-        shp_counts = jnp.sum(neighbor_arrays, axis=(-2, -1))
-    else:
-        # For float weights (e.g. Gaussian), compute effective number of looks
-        # ENL = (sum(w))^2 / sum(w^2)  (Kish, 1965, Survey Sampling)
-        w_sum = jnp.sum(neighbor_arrays, axis=(-2, -1))
-        w_sq_sum = jnp.sum(neighbor_arrays**2, axis=(-2, -1))
-        shp_counts = jnp.round(w_sum**2 / w_sq_sum).astype(jnp.int16)
 
     return PhaseLinkOutput(
         cpx_phase=cpx_phase_reshaped,
@@ -466,7 +550,110 @@ def run_cpl(
         closure_phases=closure_phases,
         closure_phase_coh=closure_phase_coh,
         multilooked_coherence=nearest_coherence,
+        two_hop_closure=two_hop_closure,
+        split_half_ratio=split_half_ratio,
+        effective_looks_fraction=looks_fraction,
     )
+
+
+def _count_looks(
+    neighbor_arrays: ArrayLike | None, out_shape: tuple[int, int], half_window
+) -> Array:
+    """Per-pixel look count: window size, neighbor count, or Kish effective size."""
+    if neighbor_arrays is None:
+        n = (2 * half_window[0] + 1) * (2 * half_window[1] + 1)
+        return jnp.full(out_shape, float(n), dtype=jnp.float32)
+    na = jnp.asarray(neighbor_arrays)
+    if na.dtype == jnp.bool_:
+        return jnp.sum(na, axis=(-2, -1)).astype(jnp.float32)
+    w_sum = jnp.sum(na, axis=(-2, -1))
+    w_sq_sum = jnp.sum(na**2, axis=(-2, -1))
+    enl = jnp.where(w_sq_sum > 0, w_sum**2 / jnp.maximum(w_sq_sum, 1e-12), 0.0)
+    return enl.astype(jnp.float32)
+
+
+def _mean_two_hop_closures(
+    C_arrays: Array, scales: Sequence[int], first_real_slc_idx: int
+) -> Array:
+    """Angle of the mean two-hop closure phasor per pixel, one band per scale.
+
+    Compressed SLCs are excluded so every triplet is made of real acquisitions.
+    Scales the stack is too short for give NaN.
+    """
+    rows, cols = C_arrays.shape[:2]
+    if not scales:
+        return jnp.zeros((rows, cols, 0), dtype=jnp.float32)
+    C_real = C_arrays[..., first_real_slc_idx:, first_real_slc_idx:]
+    n_real = C_real.shape[-1]
+    maps = []
+    for scale in scales:
+        k = int(scale)
+        if k < 1 or n_real <= 2 * k:
+            maps.append(jnp.full((rows, cols), jnp.nan, dtype=jnp.float32))
+            continue
+        xi = compute_two_hop_closure_phases_batch(C_real, scale=k)
+        maps.append(jnp.angle(jnp.mean(jnp.exp(1j * xi), axis=-1)).astype(jnp.float32))
+    return jnp.stack(maps, axis=-1)
+
+
+def _split_half_ratio(
+    slc_stack: ArrayLike,
+    half_window: HalfWindow,
+    strides: Strides,
+    neighbor_arrays: ArrayLike | None,
+    *,
+    use_evd: bool,
+    beta: float,
+    zero_correlation_threshold: float,
+    reference_idx: int,
+    looks_fraction: float,
+    out_shape: tuple[int, int],
+) -> Array:
+    """Link the left and right halves of every window and compare their scatter.
+
+    The phase common to the window (deformation, atmosphere, any consistent
+    nuisance) cancels in the difference of the two half-window estimates, so the
+    difference is a direct, truth-free sample of the estimator's scatter. Under
+    the Gaussian distributed-scatterer model its variance is the sum of the two
+    halves' CRLB variances; the returned ratio is the RMS over non-reference
+    dates of ``difference / predicted standard deviation``.
+    """
+    wy, wx = 2 * half_window[0] + 1, 2 * half_window[1] + 1
+    n = jnp.asarray(slc_stack).shape[0]
+    if wx < 3:
+        return jnp.full(out_shape, jnp.nan, dtype=jnp.float32)
+    if neighbor_arrays is None:
+        base = np.ones((*out_shape, wy, wx), dtype=bool)
+    else:
+        base = np.asarray(neighbor_arrays)
+    left = np.zeros((wy, wx), dtype=bool)
+    left[:, : wx // 2] = True
+    right = np.zeros((wy, wx), dtype=bool)
+    right[:, wx // 2 + 1 :] = True
+
+    halves = []
+    for side in (left, right):
+        mask = base * side
+        C = covariance.estimate_stack_covariance(
+            slc_stack, half_window, strides, neighbor_arrays=mask
+        )
+        cpx, _, _, sig1 = process_coherence_matrices(
+            C,
+            use_evd=use_evd,
+            beta=beta,
+            zero_correlation_threshold=zero_correlation_threshold,
+            reference_idx=reference_idx,
+            num_looks=1,
+            compute_crlb=True,
+        )
+        looks = _count_looks(mask, out_shape, half_window) * looks_fraction
+        halves.append((jnp.angle(cpx), sig1**2 / jnp.maximum(looks, 1.0)[..., None]))
+    (phase_a, var_a), (phase_b, var_b) = halves
+    delta = jnp.angle(jnp.exp(1j * (phase_a - phase_b)))
+    z2 = delta**2 / (var_a + var_b)
+    keep = jnp.arange(n) != (reference_idx % n)
+    ratio = jnp.sqrt(jnp.nanmean(z2[..., keep], axis=-1))
+    return ratio.astype(jnp.float32)
 
 
 @partial(

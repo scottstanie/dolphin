@@ -19,6 +19,7 @@ from pydantic import (
 from dolphin import __version__ as _dolphin_version
 from dolphin._types import Bbox
 from dolphin.io import DEFAULT_HDF5_OPTIONS, DEFAULT_TIFF_OPTIONS
+from dolphin.phase_link._looks import CrlbLooksMethod
 from dolphin.stack import CompressedSlcPlan
 
 from ._enums import PsMethod, ShpMethod
@@ -242,6 +243,35 @@ class PhaseLinkingOptions(BaseModel, extra="forbid"):
             "Flatten (deramp) each SLC within the multilook window before covariance"
             " estimation. Removes local phase gradients to improve coherence estimates"
             " in areas with strong fringes."
+        ),
+    )
+    two_hop_closure_scales: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Scales `k` at which to write the mean two-hop closure phase of triplets"
+            " (i, i+k, i+2k) over the real SLCs, as `two_hop_closure_scale{k}_*.tif`."
+            " Closure that shrinks with scale points to a transient nuisance such as"
+            " soil moisture; closure that grows with scale points to unresolved"
+            " persistent motion. Empty (default) writes nothing."
+        ),
+    )
+    write_split_half: bool = Field(
+        False,
+        description=(
+            "Also link two disjoint halves of every multilook window and write"
+            " `split_half_ratio_*.tif`: the RMS over dates of their phase disagreement"
+            " divided by its CRLB prediction. Near 1 means the CRLB matches the"
+            " sampling scatter; larger values flag heterogeneity or texture that the"
+            " Gaussian model does not describe. Roughly triples phase-linking time."
+        ),
+    )
+    crlb_looks: CrlbLooksMethod = Field(
+        CrlbLooksMethod.EFFECTIVE,
+        description=(
+            "How the CRLB counts looks. `effective` scales the SHP count by an"
+            " effective-looks fraction measured from the intensity autocorrelation of"
+            " each block; `shp_count` treats every neighbor as independent;"
+            " `sqrt_half_window` reproduces the previous constant."
         ),
     )
 

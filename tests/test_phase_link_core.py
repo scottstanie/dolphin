@@ -268,3 +268,58 @@ def test_crlb_reference_matches_phase_reference():
             coh, use_evd=use_evd, reference_idx=-1, num_looks=100, compute_crlb=True
         )
         assert np.asarray(std_neg)[0, 0, -1] == 0.0
+
+
+def test_two_hop_and_split_half_outputs(slc_samples):
+    slc_stack = slc_samples.reshape(NUM_ACQ, 11, 11)
+    out = _core.run_cpl(
+        slc_stack,
+        HalfWindow(x=3, y=3),
+        Strides(x=1, y=1),
+        two_hop_scales=[1, 2, 40],
+        split_half=True,
+    )
+    two_hop = np.asarray(out.two_hop_closure)
+    assert two_hop.shape == (11, 11, 3)
+    # 40 hops need more than 80 acquisitions; the band is NaN
+    assert np.all(np.isnan(two_hop[..., 2]))
+    # Scale 1 is the nearest-triplet closure, averaged as a phasor
+    nearest_mean = np.angle(np.mean(np.exp(1j * np.asarray(out.closure_phases)), -1))
+    npt.assert_allclose(two_hop[..., 0], nearest_mean, atol=1e-5)
+    # Rank-one truth: mean closures are small
+    assert np.nanmedian(np.abs(two_hop[..., :2])) < 0.2
+
+    ratio = np.asarray(out.split_half_ratio)
+    assert ratio.shape == (11, 11)
+    interior = ratio[3:-3, 3:-3]
+    assert np.all(np.isfinite(interior))
+    # Gaussian speckle: the two half windows disagree at about the CRLB level
+    assert 0.5 < np.median(interior) < 2.5
+    assert 0.0 < out.effective_looks_fraction <= 1.0
+
+
+def test_crlb_looks_methods(slc_samples):
+    slc_stack = slc_samples.reshape(NUM_ACQ, 11, 11)
+    kw = {"half_window": HalfWindow(x=3, y=3), "strides": Strides(x=1, y=1)}
+    legacy = _core.run_cpl(slc_stack, crlb_looks="sqrt_half_window", **kw)
+    by_count = _core.run_cpl(slc_stack, crlb_looks="shp_count", **kw)
+    effective = _core.run_cpl(slc_stack, crlb_looks="effective", **kw)
+    # Rectangular window: the count method uses all 49 pixels, the legacy
+    # constant was sqrt(3 * 3) = 3 looks for every pixel
+    npt.assert_allclose(
+        np.asarray(by_count.crlb_std_dev),
+        np.asarray(legacy.crlb_std_dev) * np.sqrt(3.0 / 49.0),
+        rtol=1e-4,
+        atol=1e-6,
+    )
+    frac = effective.effective_looks_fraction
+    assert 0.0 < frac <= 1.0
+    npt.assert_allclose(
+        np.asarray(effective.crlb_std_dev),
+        np.asarray(by_count.crlb_std_dev) / np.sqrt(frac),
+        rtol=1e-4,
+        atol=1e-6,
+    )
+    assert legacy.effective_looks_fraction == 1.0
+    assert legacy.split_half_ratio.shape == (11, 11)
+    assert legacy.two_hop_closure.shape == (11, 11, 0)

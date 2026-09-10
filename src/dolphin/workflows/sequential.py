@@ -54,6 +54,9 @@ def run_wrapped_phase_sequential(
     write_closure_phase: bool = True,
     write_crlb: bool = True,
     nearest_n_coherence: int = 0,
+    two_hop_closure_scales: Sequence[int] = (),
+    write_split_half: bool = False,
+    crlb_looks: str = "effective",
     block_shape: tuple[int, int] = (512, 512),
     baseline_lag: Optional[int] = None,
     flatten: bool = True,
@@ -159,6 +162,9 @@ def run_wrapped_phase_sequential(
                 write_closure_phase=write_closure_phase,
                 write_crlb=write_crlb,
                 nearest_n_coherence=nearest_n_coherence,
+                two_hop_closure_scales=two_hop_closure_scales,
+                write_split_half=write_split_half,
+                crlb_looks=crlb_looks,
                 block_shape=block_shape,
                 baseline_lag=baseline_lag,
                 flatten=flatten,
@@ -185,6 +191,13 @@ def run_wrapped_phase_sequential(
         closure_phase_coh_files.append(closure_phase_coh_file)
         similarity_files.append(similarity_file)
         shp_count_files.append(shp_count_file)
+        # Diagnostic rasters that exist only when requested: keep them next to the
+        # other per-ministack scalar outputs
+        for extra in [
+            *cur_output_folder.glob("two_hop_closure_scale*.tif"),
+            *cur_output_folder.glob("split_half_ratio_*.tif"),
+        ]:
+            extra.rename(output_folder / extra.name)
 
     ##############################################
     # Move the per-ministack files into the `output_folder`

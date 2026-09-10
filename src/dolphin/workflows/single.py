@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +62,9 @@ def run_wrapped_phase_single(
     write_closure_phase: bool = True,
     write_crlb: bool = True,
     nearest_n_coherence: int = 0,
+    two_hop_closure_scales: Sequence[int] = (),
+    write_split_half: bool = False,
+    crlb_looks: str = "effective",
     block_shape: tuple[int, int] = (512, 512),
     baseline_lag: Optional[int] = None,
     flatten: bool = True,
@@ -201,6 +204,17 @@ def run_wrapped_phase_single(
         ),
     }
 
+    for k in two_hop_closure_scales:
+        output_files[f"two_hop_closure_scale{k}"] = OutputFile(
+            output_folder / f"two_hop_closure_scale{k}_{start_end}.tif",
+            np.float32,
+            strides,
+        )
+    if write_split_half:
+        output_files["split_half_ratio"] = OutputFile(
+            output_folder / f"split_half_ratio_{start_end}.tif", np.float32, strides
+        )
+
     for op in output_files.values():
         io.write_arr(
             arr=None,
@@ -291,6 +305,9 @@ def run_wrapped_phase_single(
                 compute_crlb=write_crlb,
                 nearest_n_coherence=nearest_n_coherence,
                 flatten=flatten,
+                two_hop_scales=two_hop_closure_scales,
+                crlb_looks=crlb_looks,
+                split_half=write_split_half,
             )
         except PhaseLinkRuntimeError as e:
             # note: this is a warning instead of info, since it should
@@ -310,6 +327,8 @@ def run_wrapped_phase_single(
         np.nan_to_num(pl_output.crlb_std_dev, copy=False)
         np.nan_to_num(pl_output.temp_coh, copy=False)
         np.nan_to_num(pl_output.closure_phase_coh, copy=False)
+        np.nan_to_num(pl_output.two_hop_closure, copy=False)
+        np.nan_to_num(pl_output.split_half_ratio, copy=False)
 
         # Compress the ministack using only the non-compressed SLCs
         # Get the mean to set as pixel magnitudes
@@ -406,6 +425,12 @@ def run_wrapped_phase_single(
                 "eigenvalues": pl_output.eigenvalues,
                 "estimator": pl_output.estimator,
             }
+            for j, k in enumerate(two_hop_closure_scales):
+                out_datas[f"two_hop_closure_scale{k}"] = pl_output.two_hop_closure[
+                    ..., j
+                ]
+            if write_split_half:
+                out_datas["split_half_ratio"] = pl_output.split_half_ratio
             for key, data in out_datas.items():
                 output_file = output_files[key]
                 trimmed_data = data[out_trim_rows, out_trim_cols]

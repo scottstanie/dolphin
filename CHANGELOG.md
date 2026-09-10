@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `phase_link.simulate_displacement_covariance`: population coherence matrix of a power-weighted mixture of displacement histories, a closure-producing model with time-invariant scattering.
+- `phase_link.compute_two_hop_closure_phases(_batch)`: closure of triplets `(i, i+k, i+2k)` at scale `k` (the "two hops" basis of Zwieback and Biessel, 2024).
+- `phase_linking.two_hop_closure_scales`: write `two_hop_closure_scale{k}_*.tif`, the per-pixel mean two-hop closure phase over the real SLCs at each requested scale. Closure that decays with scale points to a transient nuisance; closure that grows with scale points to unresolved persistent motion.
+- `phase_linking.write_split_half`: write `split_half_ratio_*.tif`, the RMS over dates of the phase disagreement between two disjoint halves of each multilook window divided by its CRLB prediction. Values near 1 mean the reported CRLB matches the sampling scatter; larger values flag heterogeneity or texture the Gaussian model does not describe. Roughly triples phase-linking run time.
+- `phase_linking.crlb_looks`: how the CRLB counts looks. `effective` (default) multiplies the SHP count by an effective-looks fraction measured from the intensity autocorrelation of the stack (`phase_link.estimate_effective_looks_fraction`); `shp_count` treats every neighbor as independent; `sqrt_half_window` reproduces the previous output.
+- Tutorial notebook `docs/notebooks/theory-displacement-heterogeneity.ipynb` on closure phase from displacement heterogeneity and what phase linking reports for a mixture.
+
+### Changed
+- The CRLB standard deviation rasters now scale with the per-pixel look count (see `crlb_looks`) instead of a constant `sqrt(half_window_y * half_window_x)` looks.
+
+### Fixed
+- CRLB standard deviations are referenced to the same acquisition as the linked phases (`reference_idx`); previously the zero entry was placed at the last compressed SLC regardless of the requested reference.
+
 ## [0.42.0](https://github.com/isce-framework/dolphin/compare/v0.41.0...v0.42.0) - 2025-08-19
 
 ### Added

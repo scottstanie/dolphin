@@ -39,6 +39,8 @@ def test_sequential_gtiff(tmp_path, slc_file_list, write_extra: bool):
         shp_method="rect",
         write_crlb=write_extra,
         write_closure_phase=write_extra,
+        two_hop_closure_scales=[1] if write_extra else (),
+        write_split_half=write_extra,
     )
 
     assert output_folder.exists()
@@ -46,6 +48,10 @@ def test_sequential_gtiff(tmp_path, slc_file_list, write_extra: bool):
     assert len(list(output_folder.glob("2*.slc.tif"))) == 3
     assert len(list(output_folder.glob("compressed_*tif"))) == 1
     assert len(list(output_folder.glob("temporal_coherence*tif"))) == 1
+    n_extra = 1 if write_extra else 0
+    assert len(list(output_folder.glob("two_hop_closure_scale1_*tif"))) == n_extra
+    assert len(list(output_folder.glob("split_half_ratio_*tif"))) == n_extra
+    assert len(list(output_folder.glob("crlb/crlb_*tif"))) == 3 * n_extra
 
 
 def _duplicate_compressed_base_ministack() -> stack.MiniStackInfo:

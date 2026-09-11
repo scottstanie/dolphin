@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
@@ -48,6 +49,8 @@ class StitchedOutputs:
     """Path to ps mask file created."""
     amp_dispersion_file: Path
     """Path to amplitude dispersion file created."""
+    diagnostic_files: list[Path] = field(default_factory=list)
+    """Stitched two-hop closure and split-half ratio rasters, when requested."""
 
 
 @log_runtime
@@ -64,6 +67,7 @@ def run(
     similarity_file_list: Sequence[Path],
     stitched_ifg_dir: Path,
     output_options: OutputOptions,
+    diagnostic_file_list: Sequence[Path] = (),
     file_date_fmt: str = "%Y%m%d",
     corr_window_size: tuple[int, int] = (11, 11),
     num_workers: int = 3,
@@ -97,6 +101,9 @@ def run(
         Sequence of paths to the SHP counts files.
     similarity_file_list : Sequence[Path]
         Sequence of paths to the spatial phase cosine similarity files.
+    diagnostic_file_list : Sequence[Path], optional
+        Per-ministack `two_hop_closure_scale{k}_*.tif` and `split_half_ratio_*.tif`
+        rasters, stitched per name prefix. Default: none.
     stitched_ifg_dir : Path
         Location to store the output stitched ifgs and correlations
     output_options : OutputOptions
@@ -264,6 +271,24 @@ def run(
     )
     stitched_closure_phase_coh_files = list(date_to_closure_phase_coh_path.values())
 
+    # Stitch the optional per-ministack diagnostics (two-hop closure at each scale,
+    # split-half ratio). Group by name prefix first so that rasters of different
+    # scales, which share the same dates, are not merged into one another.
+    stitched_diagnostic_files: list[Path] = []
+    for files in _group_by_prefix(diagnostic_file_list).values():
+        date_to_diag_path = stitching.merge_by_date(
+            image_file_list=files,
+            file_date_fmt=file_date_fmt,
+            output_dir=stitched_ifg_dir,
+            output_prefix="auto",
+            options=EXTRA_COMPRESSED_TIFF_OPTIONS,
+            out_bounds=out_bounds,
+            out_bounds_epsg=output_options.bounds_epsg,
+            dest_epsg=output_options.epsg,
+            num_workers=num_workers,
+        )
+        stitched_diagnostic_files.extend(date_to_diag_path.values())
+
     # Stitch the nearest coherence files
     date_to_multilooked_coherence_path = stitching.merge_by_date(
         image_file_list=multilooked_coherence_file_list,
@@ -306,6 +331,7 @@ def run(
         )
         create_overviews(stitched_shp_count_files, image_type=ImageType.PS)
         create_overviews(stitched_similarity_files, image_type=ImageType.CORRELATION)
+        create_overviews(stitched_diagnostic_files, image_type=ImageType.CORRELATION)
         create_image_overviews(stitched_ps_file, image_type=ImageType.PS)
         create_image_overviews(stitched_amp_disp_file, image_type=ImageType.CORRELATION)
 
@@ -321,7 +347,17 @@ def run(
         stitched_multilooked_coherence_files,
         stitched_ps_file,
         stitched_amp_disp_file,
+        stitched_diagnostic_files,
     )
+
+
+def _group_by_prefix(files: Sequence[Path]) -> dict[str, list[Path]]:
+    """Group rasters by the part of the filename before the first date."""
+    groups: dict[str, list[Path]] = {}
+    for f in files:
+        prefix = re.split(r"_?20\d{6}", Path(f).name)[0]
+        groups.setdefault(prefix, []).append(Path(f))
+    return groups
 
 
 def _align_bursts_by_date(

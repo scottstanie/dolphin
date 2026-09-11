@@ -174,6 +174,8 @@ class OutputPaths:
     timeseries_paths: list[Path] | None
     timeseries_residual_paths: list[Path] | None
     reference_point: ReferencePoint | None
+    stitched_diagnostic_files: list[Path] | None = None
+    """Stitched two-hop closure and split-half ratio rasters, when requested."""
 
     @property
     def stitched_temp_coh_file(self) -> Path:
@@ -265,6 +267,7 @@ def run(
     multilooked_coherence_files: list[Path] = []
     temp_coh_file_list: list[Path] = []
     closure_phase_coh_file_list: list[Path] = []
+    diagnostic_file_list: list[Path] = []
     ps_file_list: list[Path] = []
     amp_dispersion_file_list: list[Path] = []
     shp_count_file_list: list[Path] = []
@@ -319,6 +322,7 @@ def run(
                 amp_disp_file,
                 shp_count_files,
                 similarity_files,
+                diagnostic_files,
             ) = wrapped_phase_output
 
             # If this burst is a synthetic azimuth block, the per-block outputs
@@ -340,6 +344,7 @@ def run(
                 temp_coh_files = [crop_to_central(f, cb) for f in temp_coh_files]
                 shp_count_files = [crop_to_central(f, cb) for f in shp_count_files]
                 similarity_files = [crop_to_central(f, cb) for f in similarity_files]
+                diagnostic_files = [crop_to_central(f, cb) for f in diagnostic_files]
                 ps_file = crop_to_central(ps_file, cb)
                 amp_disp_file = crop_to_central(amp_disp_file, cb)
 
@@ -354,6 +359,7 @@ def run(
             amp_dispersion_file_list.append(amp_disp_file)
             shp_count_file_list.extend(shp_count_files)
             similarity_file_list.extend(similarity_files)
+            diagnostic_file_list.extend(diagnostic_files)
 
     # When the frame was split into azimuth blocks, the per-block compressed
     # SLCs overlap in their halos and there is one file per block per date.
@@ -390,6 +396,7 @@ def run(
         amp_dispersion_list=amp_dispersion_file_list,
         shp_count_file_list=shp_count_file_list,
         similarity_file_list=similarity_file_list,
+        diagnostic_file_list=diagnostic_file_list,
         stitched_ifg_dir=cfg.interferogram_network._directory,
         output_options=cfg.output_options,
         file_date_fmt=cfg.input_options.cslc_date_fmt,
@@ -437,6 +444,7 @@ def run(
             timeseries_paths=None,
             timeseries_residual_paths=None,
             reference_point=None,
+            stitched_diagnostic_files=stitched_paths.diagnostic_files,
         )
 
     row_looks, col_looks = cfg.phase_linking.half_window.to_looks()
@@ -522,6 +530,7 @@ def run(
         timeseries_paths=timeseries_paths,
         timeseries_residual_paths=timeseries_residual_paths,
         reference_point=reference_point,
+        stitched_diagnostic_files=stitched_paths.diagnostic_files,
     )
 
 

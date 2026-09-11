@@ -58,6 +58,9 @@ class WrappedPhaseOutput(NamedTuple):
         In the case of a single phase linking step, this is from one phase linking step.
         In the case of sequential phase linking, this from each ministack, and one
         average of all ministacks.
+    diagnostic_files : list[Path]
+        Per-ministack diagnostic rasters that exist only when requested:
+        `two_hop_closure_scale{k}_*.tif` and `split_half_ratio_*.tif`.
 
     """
 
@@ -72,6 +75,14 @@ class WrappedPhaseOutput(NamedTuple):
     amp_disp_looked_file: Path
     shp_count_files: list[Path]
     similarity_files: list[Path]
+    diagnostic_files: list[Path]
+
+
+def _find_diagnostic_files(pl_path: Path) -> list[Path]:
+    """Find the optional per-ministack diagnostic rasters in `pl_path`."""
+    return sorted(pl_path.glob("two_hop_closure_scale*tif")) + sorted(
+        pl_path.glob("split_half_ratio_*tif")
+    )
 
 
 @log_runtime
@@ -302,6 +313,8 @@ def run(
         },
     )
 
+    diagnostic_files = _find_diagnostic_files(pl_path)
+
     # ###################################################
     # Form interferograms from estimated wrapped phase
     # ###################################################
@@ -322,6 +335,7 @@ def run(
             amp_disp_looked_file,
             shp_count_files,
             similarity_files,
+            diagnostic_files,
         )
 
     logger.info(f"Creating virtual interferograms from {len(phase_linked_slcs)} files")
@@ -371,6 +385,7 @@ def run(
         amp_disp_looked_file,
         shp_count_files,
         similarity_files,
+        diagnostic_files,
     )
 
 

@@ -387,11 +387,23 @@ def test_displacement_run_writes_cumulative_closure_phase(
             cslc_file_list=opera_slc_files,
             input_options={"subdataset": "/data/VV", "wavelength": 0.056},
             interferogram_network={"max_bandwidth": 2},
-            phase_linking={"ministack_size": 500, "write_closure_phase": True},
+            phase_linking={
+                "ministack_size": 500,
+                "write_closure_phase": True,
+                "two_hop_closure_scales": [1],
+                "write_split_half": True,
+            },
             unwrap_options={"run_unwrap": False},
         )
         paths = displacement.run(cfg)
         assert paths.stitched_closure_phase_files
+        # The optional diagnostics are stitched next to the other scalar rasters
+        assert (
+            len(list(Path("interferograms").glob("two_hop_closure_scale1_*.tif"))) == 1
+        )
+        assert len(list(Path("interferograms").glob("split_half_ratio_*.tif"))) == 1
+        assert paths.stitched_diagnostic_files is not None
+        assert len(paths.stitched_diagnostic_files) == 2
         cumulative = sorted(
             Path("interferograms").glob("cumulative_closure_phase_*.tif")
         )

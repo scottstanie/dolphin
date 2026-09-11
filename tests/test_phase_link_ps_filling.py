@@ -144,3 +144,35 @@ def test_failing_ps_size():
         ps_mask=ps_mask,
         reference_idx=reference_idx,
     )
+
+
+@pytest.mark.parametrize("reference_idx", [0, 3, -1])
+def test_ps_fill_crlb_zero_at_reference(C_truth, reference_idx):
+    """The PS uncertainty proxy is written to every date except the reference."""
+    num_acq, rows, cols = 9, 12, 12
+    C = C_truth[0][:num_acq, :num_acq]
+    slc_stack = simulate.simulate_neighborhood_stack(C, rows * cols).reshape(
+        num_acq, rows, cols
+    )
+    pl_est = np.ones((num_acq, rows, cols), dtype=np.complex64)
+    temp_coh = np.zeros((rows, cols))
+    crlb = np.full((num_acq, rows, cols), 0.5, dtype=np.float32)
+    ps_mask = np.zeros((rows, cols), dtype=bool)
+    ps_mask[4, 5] = True
+
+    fill_ps_pixels(
+        pl_est,
+        temp_coh,
+        slc_stack,
+        ps_mask,
+        Strides(1, 1),
+        None,
+        reference_idx=reference_idx,
+        crlb_std_dev=crlb,
+    )
+    ref = reference_idx % num_acq
+    assert crlb[ref, 4, 5] == 0.0
+    others = np.delete(crlb[:, 4, 5], ref)
+    assert np.all(others > 0) and np.all(others != 0.5)
+    # Non-PS pixels are untouched
+    assert np.all(crlb[:, 0, 0] == 0.5)

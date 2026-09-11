@@ -116,6 +116,9 @@ def fill_ps_pixels(
         ]
         # Fill all SLC bands with the same per-pixel amp dispersion value
         crlb_std_dev[:, ps_mask_looked] = amp_disp_looked[ps_mask_looked]
+        # The reference acquisition has zero phase by construction, for PS as
+        # for DS pixels, so its uncertainty is zero too
+        crlb_std_dev[reference_idx % crlb_std_dev.shape[0], ps_mask_looked] = 0.0
 
 
 def _get_avg_ps(

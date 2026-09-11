@@ -108,6 +108,8 @@ def test_unwrap_options_defaults():
     assert ww_opts.conncomp_min_coherence is None
     assert ww_opts.conncomp_reliability == 0.5
     assert ww_opts.conncomp_thicken is True
+    assert ww_opts.connect_gaps is False
+    assert ww_opts.connect_gaps_max_px == 300
 
 
 @pytest.mark.parametrize("value", [-0.1, 1.1])

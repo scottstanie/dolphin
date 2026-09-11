@@ -516,6 +516,8 @@ def unwrap(
             min_size_px=ww_opts.min_size_px,
             max_ncomps=ww_opts.max_ncomps,
             bridge=ww_opts.bridge,
+            connect_gaps=ww_opts.connect_gaps,
+            connect_gaps_max_px=ww_opts.connect_gaps_max_px,
             goldstein_alpha=ww_goldstein_alpha,
             goldstein_psize=ww_opts.goldstein_psize,
         )

@@ -32,6 +32,7 @@ __all__ = [
     "CrlbLooksMethod",
     "effective_looks_fraction",
     "estimate_effective_looks_fraction",
+    "estimate_stack_effective_looks_fraction",
     "intensity_correlation",
 ]
 
@@ -184,3 +185,73 @@ def estimate_effective_looks_fraction(
         slc_stack, max_lag_y=window_y - 1, max_lag_x=window_x - 1, max_dates=max_dates
     )
     return effective_looks_fraction(r2_y, r2_x, window_y, window_x)
+
+
+def estimate_stack_effective_looks_fraction(
+    reader,
+    half_window: HalfWindow,
+    block_shape: tuple[int, int] = (512, 512),
+    max_blocks: int = 16,
+    max_dates: int = 3,
+    percentile: float = 50.0,
+) -> float:
+    """Estimate one ``L_eff / L_nominal`` for a whole stack from sampled blocks.
+
+    The correlation between neighboring pixels comes from the product's
+    oversampling and spectral weighting, which are the same everywhere in a
+    frame, so the fraction should be a single number per stack. Estimating it
+    block by block instead lets scene texture modulate it and prints the block
+    grid into the CRLB rasters. Texture larger than a pixel (fields, roads) adds
+    intensity correlation and lowers a block's estimate; isolated bright targets
+    dilute it and raise the estimate. The median over blocks is robust to both.
+
+    Parameters
+    ----------
+    reader : array-like
+        Anything indexable as ``reader[date, rows, cols]`` with a ``shape`` of
+        ``(n_slc, rows, cols)``, such as a `VRTStack` or a NumPy array.
+    half_window : HalfWindow
+        Half window of the phase-linking estimator.
+    block_shape : tuple[int, int]
+        Size of the blocks to sample.
+    max_blocks : int
+        Number of blocks, spread over the raster, to sample.
+    max_dates : int
+        Number of dates, spread over the stack, to read per block.
+    percentile : float
+        Percentile of the per-block fractions to return. Default 50 (median).
+
+    Returns
+    -------
+    float
+        Fraction in ``(0, 1]``; 1.0 if no block had enough valid data.
+
+    """
+    n_slc, rows, cols = reader.shape
+    br, bc = min(block_shape[0], rows), min(block_shape[1], cols)
+    n_side = max(1, int(np.ceil(np.sqrt(max_blocks))))
+    row_starts = np.unique(np.linspace(0, rows - br, n_side).round().astype(int))
+    col_starts = np.unique(np.linspace(0, cols - bc, n_side).round().astype(int))
+    date_idxs = np.unique(
+        np.linspace(0, n_slc - 1, min(max_dates, n_slc)).round().astype(int)
+    )
+    fractions = []
+    for r0 in row_starts:
+        for c0 in col_starts:
+            block = np.stack(
+                [
+                    np.asarray(reader[int(i), r0 : r0 + br, c0 : c0 + bc])
+                    for i in date_idxs
+                ]
+            )
+            valid = np.isfinite(block).all(axis=0) & (np.abs(block) > 0).any(axis=0)
+            if valid.mean() < 0.5:
+                continue
+            fractions.append(
+                estimate_effective_looks_fraction(
+                    block, half_window, max_dates=max_dates
+                )
+            )
+    if not fractions:
+        return 1.0
+    return float(np.percentile(fractions, percentile))

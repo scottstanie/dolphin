@@ -103,8 +103,8 @@ class PhaseLinkOutput(NamedTuple):
     """
 
     effective_looks_fraction: float = 1.0
-    """Ratio of effective to nominal looks used to scale the CRLB, from the
-    intensity autocorrelation of this block. 1.0 unless `crlb_looks="effective"`.
+    """Ratio of effective to nominal looks used to scale the CRLB.
+    1.0 unless `crlb_looks="effective"`.
     """
 
 
@@ -130,6 +130,7 @@ def run_phase_linking(
     nearest_n_coherence: int = 0,
     two_hop_scales: Sequence[int] = (),
     crlb_looks: CrlbLooksMethod | str = CrlbLooksMethod.EFFECTIVE,
+    effective_looks_fraction: float | None = None,
     split_half: bool = False,
 ) -> PhaseLinkOutput:
     """Estimate the linked phase for a stack of SLCs.
@@ -209,6 +210,11 @@ def run_phase_linking(
         by an effective-looks fraction measured from the intensity
         autocorrelation of the stack, ``"shp_count"`` treats every neighbor as
         independent, ``"sqrt_half_window"`` uses the legacy constant.
+    effective_looks_fraction : float, optional
+        The fraction to use with ``crlb_looks="effective"``. Workflows estimate
+        it once per stack with `estimate_stack_effective_looks_fraction` so the
+        same value applies to every block. If None, it is estimated from this
+        block alone, which varies with scene texture from block to block.
     split_half : bool, optional
         Also link two disjoint halves of every window and return the ratio of
         their phase disagreement to its CRLB prediction. Default False.
@@ -273,6 +279,7 @@ def run_phase_linking(
         nearest_n_coherence=nearest_n_coherence,
         two_hop_scales=two_hop_scales,
         crlb_looks=crlb_looks,
+        effective_looks_fraction=effective_looks_fraction,
         split_half=split_half,
     )
 
@@ -347,6 +354,7 @@ def run_cpl(
     nearest_n_coherence: int = 0,
     two_hop_scales: Sequence[int] = (),
     crlb_looks: CrlbLooksMethod | str = CrlbLooksMethod.EFFECTIVE,
+    effective_looks_fraction: float | None = None,
     split_half: bool = False,
 ) -> PhaseLinkOutput:
     """Run the Combined Phase Linking (CPL) algorithm.
@@ -402,6 +410,9 @@ def run_cpl(
         ``(i, i+k, i+2k)`` over the real SLCs. Default: none.
     crlb_looks : CrlbLooksMethod or str, optional
         How the CRLB counts looks. See `run_phase_linking`.
+    effective_looks_fraction : float, optional
+        Stack-wide fraction for ``crlb_looks="effective"``; estimated from this
+        block if None. See `run_phase_linking`.
     split_half : bool, optional
         Also link two disjoint halves of every window and return the ratio of
         their phase disagreement to its CRLB prediction. Default False.
@@ -516,7 +527,12 @@ def run_cpl(
     looks_fraction = 1.0
     if compute_crlb and crlb_looks != CrlbLooksMethod.SQRT_HALF_WINDOW:
         if crlb_looks == CrlbLooksMethod.EFFECTIVE:
-            looks_fraction = estimate_effective_looks_fraction(slc_stack, half_window)
+            if effective_looks_fraction is None:
+                looks_fraction = estimate_effective_looks_fraction(
+                    slc_stack, half_window
+                )
+            else:
+                looks_fraction = float(effective_looks_fraction)
         looks = _count_looks(neighbor_arrays, out_shape, half_window) * looks_fraction
         crlb_std_dev = crlb_std_dev / jnp.sqrt(jnp.maximum(looks, 1.0))[..., None]
 

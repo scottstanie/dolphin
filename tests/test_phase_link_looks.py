@@ -64,3 +64,28 @@ def test_nodata_and_small_blocks_are_safe():
     # Too few valid pixels: falls back to the uncorrelated answer
     tiny = _speckle(rng, 2, 8, 8)
     assert estimate_effective_looks_fraction(tiny, HalfWindow(y=3, x=3)) == 1.0
+
+
+def test_stack_level_fraction_is_one_number_and_resists_texture():
+    from dolphin.phase_link._looks import estimate_stack_effective_looks_fraction
+
+    rng = np.random.default_rng(3)
+    z = _speckle(rng, 3, 600, 600)
+    # Smooth along columns everywhere: |r|^2 = 0.25 at lag 1
+    z = (z[:, :, 1:] + z[:, :, :-1]) / np.sqrt(2)
+    # Isolated bright targets in one quadrant dilute the intensity correlation there
+    texture = np.ones(z.shape[1:])
+    texture[:300, :300] = 1.0 + 3.0 * (rng.random((300, 300)) > 0.7)
+    z_textured = z * np.sqrt(texture)
+    hw = HalfWindow(y=2, x=2)
+    expected = effective_looks_fraction([1.0, 0, 0, 0, 0], [1.0, 0.25, 0, 0, 0], 5, 5)
+    frac = estimate_stack_effective_looks_fraction(
+        z_textured, hw, block_shape=(200, 200), max_blocks=9, max_dates=3
+    )
+    assert abs(frac - expected) < 0.05
+    # The textured quadrant alone is further from the truth than the stack median
+    frac_textured = estimate_effective_looks_fraction(z_textured[:, :300, :300], hw)
+    assert abs(frac_textured - expected) > abs(frac - expected)
+    # Nodata everywhere: falls back to 1
+    nan_stack = np.full((2, 100, 100), np.nan, dtype=complex)
+    assert estimate_stack_effective_looks_fraction(nan_stack, hw) == 1.0

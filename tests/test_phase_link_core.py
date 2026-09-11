@@ -323,3 +323,19 @@ def test_crlb_looks_methods(slc_samples):
     assert legacy.effective_looks_fraction == 1.0
     assert legacy.split_half_ratio.shape == (11, 11)
     assert legacy.two_hop_closure.shape == (11, 11, 0)
+
+
+def test_given_effective_looks_fraction_is_used(slc_samples):
+    slc_stack = slc_samples.reshape(NUM_ACQ, 11, 11)
+    kw = {"half_window": HalfWindow(x=3, y=3), "strides": Strides(x=1, y=1)}
+    by_count = _core.run_cpl(slc_stack, crlb_looks="shp_count", **kw)
+    given = _core.run_cpl(
+        slc_stack, crlb_looks="effective", effective_looks_fraction=0.25, **kw
+    )
+    assert given.effective_looks_fraction == 0.25
+    npt.assert_allclose(
+        np.asarray(given.crlb_std_dev),
+        np.asarray(by_count.crlb_std_dev) * 2.0,
+        rtol=1e-4,
+        atol=1e-6,
+    )

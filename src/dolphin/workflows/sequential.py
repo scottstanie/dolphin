@@ -15,8 +15,9 @@ from opera_utils import get_dates
 from osgeo_utils import gdal_calc
 
 from dolphin import io
-from dolphin._types import Filename
+from dolphin._types import Filename, HalfWindow
 from dolphin.io import VRTStack
+from dolphin.phase_link._looks import estimate_stack_effective_looks_fraction
 from dolphin.similarity import create_similarities
 from dolphin.stack import CompressedSlcPlan, MiniStackPlanner
 
@@ -109,6 +110,19 @@ def run_wrapped_phase_sequential(
     if shp_nslc is None:
         shp_nslc = slc_vrt_stack.shape[0]
 
+    # Estimate the effective-looks fraction once so every ministack's CRLB uses
+    # the same scale: it describes the product's pixel correlation, not the scene
+    effective_looks_fraction: float | None = None
+    if write_crlb and str(getattr(crlb_looks, "value", crlb_looks)) == "effective":
+        effective_looks_fraction = estimate_stack_effective_looks_fraction(
+            slc_vrt_stack,
+            HalfWindow(y=half_window["y"], x=half_window["x"]),
+            block_shape=block_shape,
+        )
+        logger.info(
+            f"Effective looks fraction for CRLB: {effective_looks_fraction:.3f}"
+        )
+
     # list where each item is extended with output_slc_files from a ministack
     output_slc_files: list[Path] = []
     crlb_files: list[Path] = []
@@ -165,6 +179,7 @@ def run_wrapped_phase_sequential(
                 two_hop_closure_scales=two_hop_closure_scales,
                 write_split_half=write_split_half,
                 crlb_looks=crlb_looks,
+                effective_looks_fraction=effective_looks_fraction,
                 block_shape=block_shape,
                 baseline_lag=baseline_lag,
                 flatten=flatten,

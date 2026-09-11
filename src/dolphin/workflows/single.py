@@ -20,6 +20,7 @@ from dolphin._decorators import atomic_output
 from dolphin._types import Filename, HalfWindow, Strides
 from dolphin.io import BlockIndices, EagerLoader, StridedBlockManager, VRTStack
 from dolphin.phase_link import PhaseLinkRuntimeError, compress, run_phase_linking
+from dolphin.phase_link._looks import estimate_stack_effective_looks_fraction
 from dolphin.ps import calc_ps_block
 from dolphin.stack import MiniStackInfo
 from dolphin.utils import DummyProcessPoolExecutor, grow_nodata_region
@@ -65,6 +66,7 @@ def run_wrapped_phase_single(
     two_hop_closure_scales: Sequence[int] = (),
     write_split_half: bool = False,
     crlb_looks: str = "effective",
+    effective_looks_fraction: float | None = None,
     block_shape: tuple[int, int] = (512, 512),
     baseline_lag: Optional[int] = None,
     flatten: bool = True,
@@ -110,6 +112,18 @@ def run_wrapped_phase_single(
         f" {first_real_slc_idx} compressed SLCs. "
     )
     logger.info(msg)
+
+    is_effective = str(getattr(crlb_looks, "value", crlb_looks)) == "effective"
+    if write_crlb and is_effective and effective_looks_fraction is None:
+        # One value for the whole stack: the pixel correlation comes from the
+        # product's oversampling and weighting, not from the scene. Estimating it
+        # per block would print the block grid into the CRLB rasters.
+        effective_looks_fraction = estimate_stack_effective_looks_fraction(
+            vrt_stack, HalfWindow(y=yhalf, x=xhalf), block_shape=block_shape
+        )
+        logger.info(
+            f"Effective looks fraction for CRLB: {effective_looks_fraction:.3f}"
+        )
 
     # Create the background writer for this ministack
     writer = io.BackgroundBlockWriter()
@@ -307,6 +321,7 @@ def run_wrapped_phase_single(
                 flatten=flatten,
                 two_hop_scales=two_hop_closure_scales,
                 crlb_looks=crlb_looks,
+                effective_looks_fraction=effective_looks_fraction,
                 split_half=write_split_half,
             )
         except PhaseLinkRuntimeError as e:

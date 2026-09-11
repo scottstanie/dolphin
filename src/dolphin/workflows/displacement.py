@@ -399,6 +399,20 @@ def run(
         burst_align_max_fringes=cfg.unwrap_options.burst_align_max_fringes,
     )
 
+    if (
+        cfg.phase_linking.write_closure_phase
+        and cfg.phase_linking.write_cumulative_closure_phase
+        and stitched_paths.closure_phase_files
+    ):
+        from dolphin.closure import write_cumulative_closure_phase
+
+        logger.info("Writing cumulative closure phase rasters")
+        write_cumulative_closure_phase(
+            stitched_paths.closure_phase_files,
+            output_dir=cfg.interferogram_network._directory,
+            wavelength=cfg.input_options.wavelength,
+        )
+
     # ###################################
     # 3. Unwrap stitched interferograms
     # ###################################

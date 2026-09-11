@@ -226,6 +226,17 @@ class PhaseLinkingOptions(BaseModel, extra="forbid"):
             " the coherence matrix."
         ),
     )
+    write_cumulative_closure_phase: bool = Field(
+        True,
+        description=(
+            "After stitching, sum the nearest-triplet closure phase rasters through"
+            " time and write `cumulative_closure_phase_<date>.tif` next to the"
+            " interferograms, in meters (positive toward the sensor) when"
+            " `input_options.wavelength` is set, else radians. The sum equals twice"
+            " the disagreement between the bandwidth-1 and bandwidth-2 phase time"
+            " series. Only used when `write_closure_phase` is True."
+        ),
+    )
     nearest_n_coherence: int = Field(
         0,
         ge=0,

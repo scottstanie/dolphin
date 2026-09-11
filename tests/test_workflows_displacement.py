@@ -330,18 +330,18 @@ def test_displacement_run_preserves_time_of_day_in_filenames(
         burst_ifgs = list((burst_dir / "interferograms").glob("*.int.*"))
         assert len(burst_ifgs) > 0
         for p in burst_ifgs:
-            assert (
-                p.stem.count(time_token) == 2
-            ), f"Expected datetime preserved in both dates of {p.name}"
+            assert p.stem.count(time_token) == 2, (
+                f"Expected datetime preserved in both dates of {p.name}"
+            )
 
         # Stitched (cross-burst) ifgs must also keep the time-of-day in both
         # the reference and secondary date tokens.
         assert len(paths.stitched_ifg_paths) > 0
         for p in paths.stitched_ifg_paths:
             assert p.exists()
-            assert (
-                p.stem.count(time_token) == 2
-            ), f"Expected datetime preserved in both dates of {p.name}"
+            assert p.stem.count(time_token) == 2, (
+                f"Expected datetime preserved in both dates of {p.name}"
+            )
 
 
 def test_displacement_run_different_epsg(opera_slc_files: list[Path], tmpdir):
@@ -377,3 +377,27 @@ def test_displacement_run_different_epsg(opera_slc_files: list[Path], tmpdir):
                 assert get_raster_crs(p).to_epsg() == 32606
         assert get_raster_crs(paths.stitched_ps_file).to_epsg() == 32606
         assert get_raster_crs(paths.stitched_amp_dispersion_file).to_epsg() == 32606
+
+
+def test_displacement_run_writes_cumulative_closure_phase(
+    opera_slc_files: list[Path], tmpdir
+):
+    with tmpdir.as_cwd():
+        cfg = config.DisplacementWorkflow(
+            cslc_file_list=opera_slc_files,
+            input_options={"subdataset": "/data/VV", "wavelength": 0.056},
+            interferogram_network={"max_bandwidth": 2},
+            phase_linking={"ministack_size": 500, "write_closure_phase": True},
+            unwrap_options={"run_unwrap": False},
+        )
+        paths = displacement.run(cfg)
+        assert paths.stitched_closure_phase_files
+        cumulative = sorted(
+            Path("interferograms").glob("cumulative_closure_phase_*.tif")
+        )
+        # One cumulative raster per nearest triplet, labeled by the middle date
+        assert len(cumulative) == len(paths.stitched_closure_phase_files)
+        assert get_raster_units(cumulative[0]) == "meters"
+        assert get_raster_nodata(cumulative[0]) == get_raster_nodata(
+            paths.stitched_closure_phase_files[0]
+        )

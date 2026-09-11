@@ -292,6 +292,27 @@ class WhirlwindOptions(BaseModel, extra="forbid"):
             " fully independent."
         ),
     )
+    connect_gaps: bool = Field(
+        default=False,
+        description=(
+            "Draw phase paths across bounded runs of invalid pixels before"
+            " unwrapping, then drop those synthetic pixels from both outputs."
+            " The paths let the solver pick a relative 2pi level between"
+            " regions that would otherwise be solved independently, which is"
+            " what levels the NISAR sub-swaths. Unlike ``interpolate``, it"
+            " extrapolates the phase slope on each side of a gap, so a winding"
+            " estimate survives the crossing."
+        ),
+    )
+    connect_gaps_max_px: int = Field(
+        default=300,
+        description=(
+            "Widest run of invalid pixels, in pixels, that ``connect_gaps``"
+            " will cross. This is a geometric width limit only; it does not"
+            " distinguish why the pixels are invalid."
+        ),
+        ge=1,
+    )
 
     @field_validator("conncomp_min_coherence")
     @classmethod

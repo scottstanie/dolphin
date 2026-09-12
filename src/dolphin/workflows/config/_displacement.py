@@ -189,27 +189,19 @@ class DisplacementWorkflow(WorkflowBase):
         super().model_post_init(context)
 
         if self.input_options.wavelength is None and self.cslc_file_list:
-            # Infer the wavelength from the last file's name. Cheap string
-            # checks beat opening the file, and they work for any wrapper
-            # (raw HDF5, VRT, GeoTIFF copy) that preserves the sensor prefix.
+            # Fixed-carrier sensors can use filename hints. NISAR requires
+            # metadata from the selected frequency group or exported raster.
             last_name = self.cslc_file_list[-1].name.upper()
             if "CAPELLA" in last_name:
                 self.input_options.wavelength = constants.CAPELLA_WAVELENGTH
-            elif last_name.startswith("NISAR_L"):
-                # NISAR filename spec (NISAR D-102269 §3.4): the first slot
-                # after `NISAR_` is instrument + level, e.g. `L2` = L-SAR
-                # Level 2, `S2` = S-SAR Level 2. Product files don't
-                # currently store an explicit center frequency anywhere, so
-                # map instrument -> single wavelength constant. NOTE: L-band
-                # frequencyA and frequencyB centers differ by ~1% (~2 mm
-                # wavelength); sweets always downloads a single-frequency
-                # stack so it's never mixing them, and the constant matches
-                # frequencyA which is what every current product ships.
-                # Revisit if freqB-only products appear or if mm-accurate
-                # displacement becomes important.
-                self.input_options.wavelength = constants.NISAR_L_WAVELENGTH
-            elif last_name.startswith("NISAR_S"):
-                self.input_options.wavelength = constants.NISAR_S_WAVELENGTH
+            elif last_name.startswith("NISAR") or (
+                self.input_options.subdataset or ""
+            ).lstrip("/").startswith(("science/LSAR/GSLC/", "science/SSAR/GSLC/")):
+                from ._wavelength import nisar_stack_wavelength
+
+                self.input_options.wavelength = nisar_stack_wavelength(
+                    self.cslc_file_list, self.input_options.subdataset
+                )
             else:
                 # Try/catch the OPERA-S1 burst naming convention
                 try:

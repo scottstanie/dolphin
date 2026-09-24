@@ -178,6 +178,35 @@ class TestInvert:
         npt.assert_allclose(phi2, sar_phases[1:], atol=1e-5)
         npt.assert_allclose(residuals2, residuals, atol=1e-5)
 
+    @pytest.mark.parametrize("use_weights", [False, True])
+    def test_censored_stack_ignores_flagged_values(self, data, A, use_weights):
+        """Flagged values must not affect the solution or the residuals."""
+        _sar_dates, sar_phases, _ifg_date_pairs, ifgs = data
+        missing_data_flags = np.ones(ifgs.shape, dtype=bool)
+        missing_data_flags[1, :, :] = False
+        corrupted = ifgs.copy()
+        corrupted[1, :, :] += 100.0
+        weights = np.ones_like(ifgs) if use_weights else None
+
+        phi, residuals = timeseries.invert_stack(
+            A, corrupted, weights, missing_data_flags
+        )
+        npt.assert_allclose(phi, sar_phases[1:], atol=1e-4)
+        npt.assert_allclose(residuals, 0, atol=1e-4)
+
+    def test_censored_stack_single_pixel(self, data, A):
+        _sar_dates, sar_phases, _ifg_date_pairs, ifgs = data
+        pixel = ifgs[:, -1:, -1:].copy()
+        missing_data_flags = np.ones(pixel.shape, dtype=bool)
+        missing_data_flags[0] = False
+        pixel[0] += 100.0
+        phi, residuals = timeseries.invert_stack(
+            A, pixel, missing_data_flags=missing_data_flags
+        )
+        assert phi.shape == sar_phases[1:, -1:, -1:].shape
+        npt.assert_allclose(phi, sar_phases[1:, -1:, -1:], atol=1e-4)
+        npt.assert_allclose(residuals, 0, atol=1e-4)
+
     def test_remove_row_vs_weighted(self, data, A):
         """Check that removing a row/data point is equivalent to zero-weighting it."""
         _sar_dates, _sar_phases, _ifg_date_pairs, ifgs = data

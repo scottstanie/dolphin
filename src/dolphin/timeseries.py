@@ -458,15 +458,15 @@ def censored_lstsq(A, B, M):
     http://alexhwilliams.info/itsneuronalblog/2018/02/26/censored-lstsq/
 
     """
-    # if B is a vector, simply drop out corresponding rows in A
-    if B.ndim == 1 or B.shape[1] == 1:
-        return jnp.linalg.lstsq(A[M], B[M])[0]
-
-    # else solve via tensor representation
-    rhs = jnp.dot(A.T, M * B).T[:, :, None]  # k x n x 1 tensor
-    T = jnp.matmul(A.T[None, :, :], M.T[:, :, None] * A[None, :, :])  # k x n x n tensor
-    x = jnp.squeeze(jnp.linalg.solve(T, rhs)).T  # transpose to get n x k
-    residuals = jnp.linalg.norm(A @ x - (B * M.astype(int)), axis=0)
+    B2 = jnp.atleast_2d(B.T).T
+    M2 = jnp.atleast_2d(M.T).T
+    rhs = jnp.dot(A.T, M2 * B2).T[:, :, None]  # k x n x 1 tensor
+    T = jnp.matmul(A.T[None, :, :], M2.T[:, :, None] * A[None, :, :])  # k x n x n
+    x = jnp.linalg.solve(T, rhs)[:, :, 0].T  # n x k
+    # Censored rows are not observations, so they must not enter the misfit.
+    residuals = jnp.sum((M2 * (A @ x - B2)) ** 2, axis=0)
+    if B.ndim == 1:
+        return x[:, 0], residuals
     return x, residuals
 
 
@@ -540,8 +540,10 @@ def invert_stack(
         Same shape as `dphi`.
         If not provided, all weights are set to 1 (ordinary least squares).
     missing_data_flags : ArrayLike, optional
-        Boolean matrix, same shape as `dphi`, indicating a missing value in `dphi`.
-        If provided, the least squares result will ignore these entries.
+        Boolean matrix, same shape as `dphi`, where False marks a missing value
+        in `dphi` (True means the value is used).
+        If provided, the least squares result will ignore these entries, with
+        or without `weights`.
         Example may come from having connected component masks indicate unreliable
         values in `dphi` for certain interferograms.
 
@@ -563,18 +565,24 @@ def invert_stack(
     """
     n_ifgs, n_rows, n_cols = dphi.shape
 
-    if weights is None:
+    if weights is not None and missing_data_flags is not None:
+        # A zero weight removes an observation, so the weighted solver can
+        # honor both inputs; `censored_lstsq` has no notion of weights.
+        weights = weights * missing_data_flags
+        missing_data_flags = None
+
+    if missing_data_flags is not None:
+        b = dphi.reshape(n_ifgs, -1)
+        missing_data = missing_data_flags.reshape(n_ifgs, -1)
+        phase_cols, residuals_cols = censored_lstsq(A, b, missing_data)
+        phase = phase_cols.reshape(-1, n_rows, n_cols)
+        residuals = residuals_cols.reshape(n_rows, n_cols)
+    elif weights is None:
         # Can use ordinary least squares with no weights
         # Reshape to be size (M, K) instead of 3D
         b = dphi.reshape(n_ifgs, -1)
         phase_cols, residuals_cols, _, _ = jnp.linalg.lstsq(A, b)
         # Reshape the phase and residuals to be 3D
-        phase = phase_cols.reshape(-1, n_rows, n_cols)
-        residuals = residuals_cols.reshape(n_rows, n_cols)
-    elif missing_data_flags is not None:
-        b = dphi.reshape(n_ifgs, -1)
-        missing_data = missing_data_flags.reshape(n_ifgs, -1)
-        phase_cols, residuals_cols = censored_lstsq(A, b, missing_data)
         phase = phase_cols.reshape(-1, n_rows, n_cols)
         residuals = residuals_cols.reshape(n_rows, n_cols)
     else:

@@ -67,3 +67,24 @@ def test_filter(tmp_path, unw_files):
         max_workers=1,
         wavelength_cutoff=50,
     )
+
+
+def test_gaussian_filter_nan_uses_mode_with_nans():
+    from scipy.ndimage import gaussian_filter
+
+    ramp = np.tile(np.arange(64, dtype=float), (64, 1))
+    with_nan = ramp.copy()
+    with_nan[32, 32] = np.nan
+    out = filtering.gaussian_filter_nan(with_nan, 2, mode="nearest")
+    # Far from the NaN, the edges must follow the requested boundary mode.
+    expected = gaussian_filter(ramp, 2, mode="nearest")
+    np.testing.assert_allclose(out[:10, :10], expected[:10, :10])
+
+
+@pytest.mark.parametrize("has_nan", [False, True])
+def test_gaussian_filter_nan_preserves_constant_at_edges(has_nan):
+    image = np.full((20, 20), 3.0)
+    if has_nan:
+        image[10, 10] = np.nan
+    out = filtering.gaussian_filter_nan(image, 2)
+    np.testing.assert_allclose(out, 3.0)

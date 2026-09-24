@@ -326,16 +326,16 @@ def gaussian_filter_nan(
     """
     from scipy.ndimage import gaussian_filter
 
-    if np.sum(np.isnan(image)) == 0:
-        return gaussian_filter(image, sigma=sigma, mode=mode, **kwargs)
-
-    V = image.copy()
-    nan_idxs = np.isnan(image)
+    # Normalize by the filtered weights even without NaNs, so the result does
+    # not depend on whether a NaN happens to be present: with mode="constant",
+    # an unnormalized filter would pull the image edges toward zero.
+    V = np.array(image, copy=True)
+    nan_idxs = np.isnan(V)
     V[nan_idxs] = 0
-    V_filt = gaussian_filter(V, sigma, **kwargs)
+    V_filt = gaussian_filter(V, sigma, mode=mode, **kwargs)
 
-    W = np.ones(image.shape)
+    W = np.ones(V.shape)
     W[nan_idxs] = 0
-    W_filt = gaussian_filter(W, sigma, **kwargs)
+    W_filt = gaussian_filter(W, sigma, mode=mode, **kwargs)
 
     return V_filt / W_filt

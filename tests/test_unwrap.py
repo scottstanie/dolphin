@@ -367,6 +367,8 @@ class TestWhirlwind:
                 conncomp_min_coherence=None,
                 conncomp_reliability=2.0,
                 conncomp_thicken=False,
+                connect_gaps=True,
+                connect_gaps_max_px=50,
             ),
         )
         out_path, conncomp_path = dolphin.unwrap.unwrap(
@@ -381,4 +383,6 @@ class TestWhirlwind:
         assert received_kwargs["conncomp_algorithm"] == "snaphu"
         assert received_kwargs["conncomp_min_coherence"] is None
         assert received_kwargs["conncomp_reliability"] == 2.0
+        assert received_kwargs["connect_gaps"] is True
+        assert received_kwargs["connect_gaps_max_px"] == 50
         assert "solve_min_coherence" not in received_kwargs

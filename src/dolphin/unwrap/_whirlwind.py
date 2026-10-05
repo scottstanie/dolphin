@@ -47,6 +47,8 @@ def unwrap_whirlwind(
     min_size_px: int = 100,
     max_ncomps: int = 1024,
     bridge: bool = True,
+    connect_gaps: bool = False,
+    connect_gaps_max_px: int = 300,
     goldstein_alpha: float = 0.0,
     goldstein_psize: int = 64,
 ) -> tuple[Path, Path]:
@@ -113,6 +115,17 @@ interp_alpha
     bridge : bool, optional
         Bridge disjoint connected components across low-coherence gaps so they
         share a consistent integer cycle. Default True.
+    connect_gaps : bool, optional
+        Draw phase paths across bounded runs of invalid pixels before
+        unwrapping, then drop those synthetic pixels from both outputs. The
+        paths let the solver pick a relative 2pi level between regions that
+        would otherwise be solved independently, which is what levels the
+        NISAR sub-swaths. Unlike ``interpolate``, it extrapolates the phase
+        slope on each side of a gap, so a winding estimate survives the
+        crossing. Default False.
+    connect_gaps_max_px : int, optional
+        Widest invalid run, in pixels, that ``connect_gaps`` will cross.
+        Default 300.
     goldstein_alpha : float, optional
         Strength of ww's internal Goldstein pre-filter. 0 disables it.
         Default 0.0.
@@ -179,6 +192,8 @@ interp_alpha
             min_size_px=min_size_px,
             max_ncomps=max_ncomps,
             bridge=bridge,
+            connect_gaps=connect_gaps,
+            connect_gaps_max_px=connect_gaps_max_px,
             goldstein_alpha=goldstein_alpha,
             goldstein_psize=goldstein_psize,
         )

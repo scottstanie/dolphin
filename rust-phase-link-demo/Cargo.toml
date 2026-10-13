@@ -1,0 +1,40 @@
+[package]
+name = "phase-link-demo"
+version = "0.1.0"
+edition = "2021"
+description = "Didactic Rust port of dolphin's EVD phase linking (mirrors docs/notebooks/theory-phase-linking.ipynb)"
+license = "BSD-3-Clause"
+
+[lib]
+name = "phase_link_demo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "phase-link"
+path = "src/bin/phase_link.rs"
+required-features = ["gdal-io"]
+
+[[example]]
+name = "synthetic"
+path = "examples/synthetic.rs"
+
+[features]
+default = []
+# Enable to build the CLI binary that reads/writes complex GeoTIFFs via GDAL.
+# Requires libgdal-dev (or equivalent) on the host.
+gdal-io = ["dep:gdal", "dep:clap", "dep:glob", "dep:anyhow"]
+
+[dependencies]
+ndarray = { version = "0.16", features = ["rayon"] }
+num-complex = "0.4"
+rayon = "1.10"
+
+# Optional, only pulled in for the CLI.
+gdal = { version = "0.17", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+glob = { version = "0.3", optional = true }
+anyhow = { version = "1", optional = true }
+
+[dev-dependencies]
+ndarray = "0.16"
+num-complex = "0.4"

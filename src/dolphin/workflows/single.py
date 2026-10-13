@@ -159,6 +159,9 @@ def run_wrapped_phase_single(
         "temporal_coherence": OutputFile(
             output_folder / f"temporal_coherence_{start_end}.tif", np.float32, strides
         ),
+        "closure_phase_coh": OutputFile(
+            output_folder / f"closure_phase_coh_{start_end}.tif", np.float32, strides
+        ),
         "shp_counts": OutputFile(
             output_folder / f"shp_counts_{start_end}.tif", np.uint16, strides
         ),
@@ -279,6 +282,7 @@ def run_wrapped_phase_single(
         np.nan_to_num(pl_output.cpx_phase, copy=False)
         np.nan_to_num(pl_output.crlb_std_dev, copy=False)
         np.nan_to_num(pl_output.temp_coh, copy=False)
+        np.nan_to_num(pl_output.closure_phase_coh, copy=False)
 
         # Compress the ministack using only the non-compressed SLCs
         # Get the mean to set as pixel magnitudes
@@ -348,6 +352,7 @@ def run_wrapped_phase_single(
             # All other outputs are strided (smaller in size)
             out_datas: dict[str, np.ndarray] = {
                 "temporal_coherence": pl_output.temp_coh,
+                "closure_phase_coh": pl_output.closure_phase_coh,
                 "shp_counts": pl_output.shp_counts,
                 "eigenvalues": pl_output.eigenvalues,
                 "estimator": pl_output.estimator,
